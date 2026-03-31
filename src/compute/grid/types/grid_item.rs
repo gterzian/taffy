@@ -6,7 +6,7 @@ use crate::geometry::{Line, Point, Rect, Size};
 use crate::style::{AlignItems, AlignSelf, AvailableSpace, Dimension, LengthPercentageAuto, Overflow};
 use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
-use crate::{BoxSizing, GridItemStyle, LengthPercentage};
+use crate::{BoxSizing, GridAxisKind, GridItemStyle, LengthPercentage};
 use core::ops::Range;
 
 /// Represents a single grid item
@@ -131,8 +131,14 @@ impl GridItem {
             padding: style.padding(),
             border: style.border(),
             margin: style.margin(),
-            align_self: style.align_self().unwrap_or(parent_align_items),
-            justify_self: style.justify_self().unwrap_or(parent_justify_items),
+            align_self: match style.subgrid_axis_kind(crate::geometry::AbsoluteAxis::Vertical) {
+                GridAxisKind::Subgrid => AlignSelf::Stretch,
+                GridAxisKind::Standalone => style.align_self().unwrap_or(parent_align_items),
+            },
+            justify_self: match style.subgrid_axis_kind(crate::geometry::AbsoluteAxis::Horizontal) {
+                GridAxisKind::Subgrid => AlignSelf::Stretch,
+                GridAxisKind::Standalone => style.justify_self().unwrap_or(parent_justify_items),
+            },
             baseline: None,
             baseline_shim: 0.0,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later

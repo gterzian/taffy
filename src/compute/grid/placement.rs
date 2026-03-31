@@ -7,7 +7,7 @@ use crate::geometry::{AbsoluteAxis, InBothAbsAxis};
 use crate::style::{AlignItems, GridAutoFlow, OriginZeroGridPlacement};
 use crate::tree::NodeId;
 use crate::util::sys::Vec;
-use crate::{CoreStyle, Direction, GridItemStyle};
+use crate::{CoreStyle, Direction, GridAreaAxis, GridAxisKind, GridItemStyle};
 
 #[inline]
 /// Returns whether placement/search should run in reverse for this axis.
@@ -74,6 +74,54 @@ fn maybe_mirror_span(
     }
 }
 
+#[inline]
+fn clamp_span_to_explicit_grid(span: Line<OriginZeroLine>, explicit_track_count: u16) -> Line<OriginZeroLine> {
+    let grid_end = explicit_track_count as i16;
+
+    if span.end.0 <= 0 {
+        return Line { start: OriginZeroLine(0), end: OriginZeroLine(1) };
+    }
+
+    if span.start.0 >= grid_end {
+        return Line { start: OriginZeroLine(grid_end - 1), end: OriginZeroLine(grid_end) };
+    }
+
+    let start = span.start.0.max(0);
+    let end = span.end.0.min(grid_end);
+    if start < end {
+        Line { start: OriginZeroLine(start), end: OriginZeroLine(end) }
+    } else if start <= 0 {
+        Line { start: OriginZeroLine(0), end: OriginZeroLine(1) }
+    } else {
+        Line { start: OriginZeroLine(grid_end - 1), end: OriginZeroLine(grid_end) }
+    }
+}
+
+#[inline]
+fn maybe_clamp_subgrid_span(
+    span: Line<OriginZeroLine>,
+    axis: AbsoluteAxis,
+    named_line_resolver: &NamedLineResolver<impl crate::CheapCloneStr>,
+    explicit_col_count: u16,
+    explicit_row_count: u16,
+) -> Line<OriginZeroLine> {
+    let axis_kind = match axis {
+        AbsoluteAxis::Horizontal => named_line_resolver.axis_kind(GridAreaAxis::Column),
+        AbsoluteAxis::Vertical => named_line_resolver.axis_kind(GridAreaAxis::Row),
+    };
+
+    if axis_kind != GridAxisKind::Subgrid {
+        return span;
+    }
+
+    let explicit_track_count = match axis {
+        AbsoluteAxis::Horizontal => explicit_col_count,
+        AbsoluteAxis::Vertical => explicit_row_count,
+    };
+
+    clamp_span_to_explicit_grid(span, explicit_track_count)
+}
+
 /// 8.5. Grid Item Placement Algorithm
 /// Place items into the grid, generating new rows/column into the implicit grid as required
 ///
@@ -95,9 +143,9 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
     let primary_axis = grid_auto_flow.primary_axis();
     let secondary_axis = primary_axis.other_axis();
     let explicit_col_count = cell_occupancy_matrix.track_counts(AbsoluteAxis::Horizontal).explicit;
+    let explicit_row_count = cell_occupancy_matrix.track_counts(AbsoluteAxis::Vertical).explicit;
 
     let map_child_style_to_origin_zero_placement = {
-        let explicit_row_count = cell_occupancy_matrix.track_counts(AbsoluteAxis::Vertical).explicit;
         move |(index, node, style): (usize, NodeId, S)| -> (_, _, _, S) {
             let origin_zero_placement = InBothAbsAxis {
                 horizontal: named_line_resolver
@@ -121,8 +169,14 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
             #[cfg(test)]
             println!("Definite Item {idx}\n==============");
 
-            let (row_span, col_span) =
-                place_definite_grid_item(child_placement, primary_axis, direction, explicit_col_count);
+            let (row_span, col_span) = place_definite_grid_item(
+                child_placement,
+                primary_axis,
+                direction,
+                explicit_col_count,
+                explicit_row_count,
+                named_line_resolver,
+            );
             record_grid_placement(
                 cell_occupancy_matrix,
                 items,
@@ -156,6 +210,8 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
                 grid_auto_flow,
                 direction,
                 explicit_col_count,
+                explicit_row_count,
+                named_line_resolver,
             );
 
             record_grid_placement(
@@ -225,6 +281,8 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
                 grid_position,
                 direction,
                 explicit_col_count,
+                explicit_row_count,
+                named_line_resolver,
             );
 
             // Record item
@@ -259,19 +317,33 @@ fn place_definite_grid_item(
     primary_axis: AbsoluteAxis,
     direction: Direction,
     explicit_col_count: u16,
+    explicit_row_count: u16,
+    named_line_resolver: &NamedLineResolver<impl crate::CheapCloneStr>,
 ) -> (Line<OriginZeroLine>, Line<OriginZeroLine>) {
     // Resolve spans to tracks
-    let primary_span = maybe_mirror_span(
-        placement.get(primary_axis).resolve_definite_grid_lines(),
+    let primary_span = maybe_clamp_subgrid_span(
+        maybe_mirror_span(
+            placement.get(primary_axis).resolve_definite_grid_lines(),
+            primary_axis,
+            direction,
+            explicit_col_count,
+        ),
         primary_axis,
-        direction,
+        named_line_resolver,
         explicit_col_count,
+        explicit_row_count,
     );
-    let secondary_span = maybe_mirror_span(
-        placement.get(primary_axis.other_axis()).resolve_definite_grid_lines(),
+    let secondary_span = maybe_clamp_subgrid_span(
+        maybe_mirror_span(
+            placement.get(primary_axis.other_axis()).resolve_definite_grid_lines(),
+            primary_axis.other_axis(),
+            direction,
+            explicit_col_count,
+        ),
         primary_axis.other_axis(),
-        direction,
+        named_line_resolver,
         explicit_col_count,
+        explicit_row_count,
     );
 
     (primary_span, secondary_span)
@@ -285,6 +357,8 @@ fn place_definite_secondary_axis_item(
     auto_flow: GridAutoFlow,
     direction: Direction,
     explicit_col_count: u16,
+    explicit_row_count: u16,
+    named_line_resolver: &NamedLineResolver<impl crate::CheapCloneStr>,
 ) -> (Line<OriginZeroLine>, Line<OriginZeroLine>) {
     let primary_axis = auto_flow.primary_axis();
     let secondary_axis = primary_axis.other_axis();
@@ -292,11 +366,17 @@ fn place_definite_secondary_axis_item(
     let primary_axis_grid_start_line = cell_occupancy_matrix.track_counts(primary_axis).implicit_start_line();
     let primary_axis_grid_end_line = cell_occupancy_matrix.track_counts(primary_axis).implicit_end_line();
 
-    let secondary_axis_placement = maybe_mirror_span(
-        placement.get(secondary_axis).resolve_definite_grid_lines(),
+    let secondary_axis_placement = maybe_clamp_subgrid_span(
+        maybe_mirror_span(
+            placement.get(secondary_axis).resolve_definite_grid_lines(),
+            secondary_axis,
+            direction,
+            explicit_col_count,
+        ),
         secondary_axis,
-        direction,
+        named_line_resolver,
         explicit_col_count,
+        explicit_row_count,
     );
     let starting_position = match auto_flow.is_dense() {
         true => search_start_line(primary_axis_grid_start_line, primary_axis_grid_end_line, primary_axis_is_reversed),
@@ -351,6 +431,8 @@ fn place_indefinitely_positioned_item(
     grid_position: (OriginZeroLine, OriginZeroLine),
     direction: Direction,
     explicit_col_count: u16,
+    explicit_row_count: u16,
+    named_line_resolver: &NamedLineResolver<impl crate::CheapCloneStr>,
 ) -> (Line<OriginZeroLine>, Line<OriginZeroLine>) {
     let primary_axis = auto_flow.primary_axis();
     let secondary_axis = primary_axis.other_axis();
@@ -378,11 +460,17 @@ fn place_indefinitely_positioned_item(
     let (mut primary_idx, mut secondary_idx) = grid_position;
 
     if has_definite_primary_axis_position {
-        let primary_span = maybe_mirror_span(
-            primary_placement_style.resolve_definite_grid_lines(),
+        let primary_span = maybe_clamp_subgrid_span(
+            maybe_mirror_span(
+                primary_placement_style.resolve_definite_grid_lines(),
+                primary_axis,
+                direction,
+                explicit_col_count,
+            ),
             primary_axis,
-            direction,
+            named_line_resolver,
             explicit_col_count,
+            explicit_row_count,
         );
 
         // Compute secondary axis starting position for search
@@ -406,8 +494,13 @@ fn place_indefinitely_positioned_item(
         // Item has fixed primary axis position: so we simply increment the secondary axis position
         // until we find a space that the item fits in
         loop {
-            let secondary_span =
-                resolve_indefinite_grid_span(secondary_idx, secondary_span, secondary_axis_is_reversed);
+            let secondary_span = maybe_clamp_subgrid_span(
+                resolve_indefinite_grid_span(secondary_idx, secondary_span, secondary_axis_is_reversed),
+                secondary_axis,
+                named_line_resolver,
+                explicit_col_count,
+                explicit_row_count,
+            );
 
             // If area is occupied, increment the index and try again
             if line_area_is_occupied(primary_span, secondary_span) {
@@ -425,9 +518,20 @@ fn place_indefinitely_positioned_item(
         // existent tracks, and then we reset the primary axis back to zero and increment the secondary axis index.
         // We continue in this vein until we find a space that the item fits in.
         loop {
-            let primary_span = resolve_indefinite_grid_span(primary_idx, primary_span, primary_axis_is_reversed);
-            let secondary_span =
-                resolve_indefinite_grid_span(secondary_idx, secondary_span, secondary_axis_is_reversed);
+            let primary_span = maybe_clamp_subgrid_span(
+                resolve_indefinite_grid_span(primary_idx, primary_span, primary_axis_is_reversed),
+                primary_axis,
+                named_line_resolver,
+                explicit_col_count,
+                explicit_row_count,
+            );
+            let secondary_span = maybe_clamp_subgrid_span(
+                resolve_indefinite_grid_span(secondary_idx, secondary_span, secondary_axis_is_reversed),
+                secondary_axis,
+                named_line_resolver,
+                explicit_col_count,
+                explicit_row_count,
+            );
 
             // If the primary index is out of bounds, then increment the secondary index and reset the primary
             // index back to the start of the grid

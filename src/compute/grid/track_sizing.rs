@@ -512,8 +512,8 @@ fn resolve_item_baselines(
             continue;
         }
 
-        // Compute the baselines of all items in the row
-        for item in row_items.iter_mut() {
+        // Compute baselines only for items that participate in this row's baseline-sharing group.
+        for item in row_items.iter_mut().filter(|item| item.align_self == AlignSelf::Baseline) {
             let measured_size_and_baselines = tree.perform_child_layout(
                 item.node,
                 Size::NONE,
@@ -533,11 +533,15 @@ fn resolve_item_baselines(
         }
 
         // Compute the max baseline of all items in the row
-        let row_max_baseline =
-            row_items.iter().map(|item| item.baseline.unwrap_or(0.0)).max_by(|a, b| a.total_cmp(b)).unwrap();
+        let row_max_baseline = row_items
+            .iter()
+            .filter(|item| item.align_self == AlignSelf::Baseline)
+            .map(|item| item.baseline.unwrap_or(0.0))
+            .max_by(|a, b| a.total_cmp(b))
+            .unwrap();
 
         // Compute the baseline shim for each item in the row
-        for item in row_items.iter_mut() {
+        for item in row_items.iter_mut().filter(|item| item.align_self == AlignSelf::Baseline) {
             item.baseline_shim = row_max_baseline - item.baseline.unwrap_or(0.0);
         }
     }

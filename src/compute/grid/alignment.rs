@@ -9,7 +9,7 @@ use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 
 #[cfg(feature = "content_size")]
 use crate::compute::common::content_size::compute_content_size_contribution;
-use crate::{BoxSizing, Direction, LayoutGridContainer};
+use crate::{BoxSizing, Direction, GridAxisKind, LayoutGridContainer};
 
 /// Align the grid tracks within the grid according to the align-content (rows) or
 /// justify-content (columns) property. This only does anything if the size of the
@@ -81,6 +81,8 @@ pub(super) fn align_and_position_item(
     let aspect_ratio = style.aspect_ratio();
     let justify_self = style.justify_self();
     let align_self = style.align_self();
+    let horizontal_axis_kind = style.subgrid_axis_kind(crate::geometry::AbsoluteAxis::Horizontal);
+    let vertical_axis_kind = style.subgrid_axis_kind(crate::geometry::AbsoluteAxis::Vertical);
 
     let position = style.position();
     let inset_horizontal = style
@@ -123,20 +125,28 @@ pub(super) fn align_and_position_item(
     // and the then height is calculated from the width according the aspect ratio
     // See: https://www.w3.org/TR/css-grid-1/#grid-item-sizing
     let alignment_styles = InBothAbsAxis {
-        horizontal: justify_self.or(container_alignment_styles.horizontal).unwrap_or_else(|| {
-            if inherent_size.width.is_some() {
-                AlignSelf::Start
-            } else {
-                AlignSelf::Stretch
-            }
-        }),
-        vertical: align_self.or(container_alignment_styles.vertical).unwrap_or_else(|| {
-            if inherent_size.height.is_some() || aspect_ratio.is_some() {
-                AlignSelf::Start
-            } else {
-                AlignSelf::Stretch
-            }
-        }),
+        horizontal: if horizontal_axis_kind == GridAxisKind::Subgrid {
+            AlignSelf::Stretch
+        } else {
+            justify_self.or(container_alignment_styles.horizontal).unwrap_or_else(|| {
+                if inherent_size.width.is_some() {
+                    AlignSelf::Start
+                } else {
+                    AlignSelf::Stretch
+                }
+            })
+        },
+        vertical: if vertical_axis_kind == GridAxisKind::Subgrid {
+            AlignSelf::Stretch
+        } else {
+            align_self.or(container_alignment_styles.vertical).unwrap_or_else(|| {
+                if inherent_size.height.is_some() || aspect_ratio.is_some() {
+                    AlignSelf::Start
+                } else {
+                    AlignSelf::Stretch
+                }
+            })
+        },
     };
 
     // Note: This is not a bug. It is part of the CSS spec that both horizontal and vertical margins
@@ -236,7 +246,11 @@ pub(super) fn align_and_position_item(
 
     let (x, x_margin) = align_item_within_area(
         Line { start: grid_area.left, end: grid_area.right },
-        justify_self.unwrap_or(alignment_styles.horizontal),
+        if horizontal_axis_kind == GridAxisKind::Subgrid {
+            AlignSelf::Stretch
+        } else {
+            justify_self.unwrap_or(alignment_styles.horizontal)
+        },
         width,
         position,
         inset_horizontal,
@@ -246,7 +260,11 @@ pub(super) fn align_and_position_item(
     );
     let (y, y_margin) = align_item_within_area(
         Line { start: grid_area.top, end: grid_area.bottom },
-        align_self.unwrap_or(alignment_styles.vertical),
+        if vertical_axis_kind == GridAxisKind::Subgrid {
+            AlignSelf::Stretch
+        } else {
+            align_self.unwrap_or(alignment_styles.vertical)
+        },
         height,
         position,
         inset_vertical,

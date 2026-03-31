@@ -2,12 +2,13 @@
 //! This mainly consists of evaluating GridAutoTracks
 use super::types::{GridTrack, TrackCounts};
 use crate::geometry::AbsoluteAxis;
+use crate::CheapCloneStr;
 use crate::style::{LengthPercentage, RepetitionCount, TrackSizingFunction};
 use crate::style_helpers::TaffyAuto;
 use crate::util::sys::{ceil, floor, Vec};
 use crate::util::MaybeMath;
 use crate::util::ResolveOrZero;
-use crate::{GenericGridTemplateComponent, GenericRepetition, GridContainerStyle};
+use crate::{GenericGridTemplateComponent, GenericRepetition, GridAxisKind, GridContainerStyle, SubgridAxisContext};
 
 /// The auto-repeat fit strategy to use
 pub(crate) enum AutoRepeatStrategy {
@@ -21,13 +22,18 @@ pub(crate) enum AutoRepeatStrategy {
 }
 
 /// Compute the number of rows and columns in the explicit grid
-pub(crate) fn compute_explicit_grid_size_in_axis(
-    style: &impl GridContainerStyle,
+pub(crate) fn compute_explicit_grid_size_in_axis<S: CheapCloneStr>(
+    style: &impl GridContainerStyle<CustomIdent = S>,
     auto_fit_container_size: Option<f32>,
     auto_fit_strategy: AutoRepeatStrategy,
     resolve_calc_value: impl Fn(*const (), f32) -> f32,
+    subgrid_context: Option<&SubgridAxisContext<S>>,
     axis: AbsoluteAxis,
 ) -> (u16, u16) {
+    if style.grid_axis_kind(axis) == GridAxisKind::Subgrid {
+        return (0, subgrid_context.map(|context| context.track_count).unwrap_or(1));
+    }
+
     let template = match axis {
         AbsoluteAxis::Horizontal => style.grid_template_columns(),
         AbsoluteAxis::Vertical => style.grid_template_rows(),
@@ -182,10 +188,11 @@ pub(crate) fn compute_explicit_grid_size_in_axis(
 
 /// Resolve the track sizing functions of explicit tracks, automatically created tracks, and gutters
 /// given a set of track counts and all of the relevant styles
-pub(super) fn initialize_grid_tracks(
+pub(super) fn initialize_grid_tracks<S: CheapCloneStr>(
     tracks: &mut Vec<GridTrack>,
     counts: TrackCounts,
     style: &impl GridContainerStyle,
+    subgrid_context: Option<&SubgridAxisContext<S>>,
     axis: AbsoluteAxis,
     track_has_items: impl Fn(usize) -> bool,
 ) {
@@ -280,6 +287,40 @@ pub(super) fn initialize_grid_tracks(
                     },
                 }
             });
+        } else if style.grid_axis_kind(axis) == GridAxisKind::Subgrid {
+            let inherited_track_sizes = subgrid_context.map(|context| context.track_sizes.as_slice()).unwrap_or(&[]);
+            let inherited_gutter_sizes = subgrid_context.map(|context| context.gutter_sizes.as_slice()).unwrap_or(&[]);
+
+            for track_index in 0..counts.explicit as usize {
+                let track = inherited_track_sizes.get(track_index).map_or_else(
+                    || {
+                        GridTrack::new(
+                            TrackSizingFunction::AUTO.min_sizing_function(),
+                            TrackSizingFunction::AUTO.max_sizing_function(),
+                        )
+                    },
+                    |track_size| {
+                        GridTrack::new(
+                            crate::style::MinTrackSizingFunction::length(*track_size),
+                            crate::style::MaxTrackSizingFunction::length(*track_size),
+                        )
+                    },
+                );
+                tracks.push(track);
+
+                let gutter = inherited_gutter_sizes.get(track_index).copied().map_or_else(
+                    || {
+                        if track_index + 1 == counts.explicit as usize {
+                            GridTrack::gutter(LengthPercentage::length(0.0))
+                        } else {
+                            GridTrack::gutter(gap)
+                        }
+                    },
+                    |gutter_size| GridTrack::gutter(LengthPercentage::length(gutter_size)),
+                );
+                tracks.push(gutter);
+                current_track_index += 1;
+            }
         }
     }
 

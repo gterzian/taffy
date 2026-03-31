@@ -1,12 +1,13 @@
 //! Code for resolving name grid lines and areas
 
 use crate::{
-    CheapCloneStr, GenericGridTemplateComponent, GenericRepetition as _, GridAreaAxis, GridAreaEnd, GridContainerStyle,
-    GridPlacement, GridTemplateArea, Line, NonNamedGridPlacement, RepetitionCount,
+    CheapCloneStr, GenericGridTemplateComponent, GenericRepetition as _, GridAreaAxis, GridAreaEnd, GridAxisKind,
+    GridContainerStyle, GridPlacement, GridTemplateArea, Line, NonNamedGridPlacement, RepetitionCount,
 };
+use crate::geometry::AbsoluteAxis;
 use core::{borrow::Borrow, cmp::Ordering, fmt::Debug};
 
-use super::GridLine;
+use super::{GridLine, OriginZeroLine};
 // use alloc::fmt::format;
 use crate::sys::{format, single_value_vec, Map, Vec};
 
@@ -63,6 +64,10 @@ pub(crate) struct NamedLineResolver<S: CheapCloneStr> {
     /// The number of explicit rows in the grid. This is an *input* to the `NamedLineResolver` and is
     /// used when computing the fallback line when a non-existent named line is specified.
     explicit_row_count: u16,
+    /// Whether the column axis is subgridded.
+    column_axis_kind: GridAxisKind,
+    /// Whether the row axis is subgridded.
+    row_axis_kind: GridAxisKind,
 }
 
 /// Utility function to create or update an entry in a line name map
@@ -76,7 +81,10 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
         style: &impl GridContainerStyle<CustomIdent = S>,
         column_auto_repetitions: u16,
         row_auto_repetitions: u16,
+        subgrid_context: Option<&crate::SubgridContext<S>>,
     ) -> Self {
+        let column_axis_kind = style.grid_axis_kind(AbsoluteAxis::Horizontal);
+        let row_axis_kind = style.grid_axis_kind(AbsoluteAxis::Vertical);
         let mut areas: Map<StrHasher<S>, GridTemplateArea<_>> = Map::new();
         let mut column_lines: Map<StrHasher<S>, Vec<u16>> = Map::new();
         let mut row_lines: Map<StrHasher<S>, Vec<u16>> = Map::new();
@@ -105,38 +113,60 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
         // ---
 
         let mut current_line = 0;
-        if let Some(mut column_tracks) = style.grid_template_columns() {
-            if let Some(column_line_names_iter) = style.grid_template_column_names() {
-                for line_names in column_line_names_iter {
-                    current_line += 1;
-                    for line_name in line_names.into_iter() {
-                        column_lines
-                            .entry(StrHasher(line_name.clone()))
-                            .and_modify(|lines: &mut Vec<u16>| lines.push(current_line))
-                            .or_insert_with(|| single_value_vec(current_line));
-                    }
-
-                    if let Some(GenericGridTemplateComponent::Repeat(repeat)) = column_tracks.next() {
-                        let repeat_count = match repeat.count() {
-                            RepetitionCount::Count(count) => count,
-                            RepetitionCount::AutoFill | RepetitionCount::AutoFit => column_auto_repetitions,
-                        };
-
-                        for _ in 0..repeat_count {
-                            for line_name_set in repeat.lines_names() {
-                                for line_name in line_name_set {
-                                    upsert_line_name_map(&mut column_lines, line_name.clone(), current_line);
-                                }
-                                current_line += 1;
+        match column_axis_kind {
+            GridAxisKind::Standalone => {
+                if let Some(mut column_tracks) = style.grid_template_columns() {
+                    if let Some(column_line_names_iter) = style.grid_template_line_names(AbsoluteAxis::Horizontal) {
+                        for line_names in column_line_names_iter {
+                            current_line += 1;
+                            for line_name in line_names.into_iter() {
+                                column_lines
+                                    .entry(StrHasher(line_name.clone()))
+                                    .and_modify(|lines: &mut Vec<u16>| lines.push(current_line))
+                                    .or_insert_with(|| single_value_vec(current_line));
                             }
-                            // Last line name set collapses with following line name set
-                            current_line -= 1;
+
+                            if let Some(GenericGridTemplateComponent::Repeat(repeat)) = column_tracks.next() {
+                                let repeat_count = match repeat.count() {
+                                    RepetitionCount::Count(count) => count,
+                                    RepetitionCount::AutoFill | RepetitionCount::AutoFit => column_auto_repetitions,
+                                };
+
+                                for _ in 0..repeat_count {
+                                    for line_name_set in repeat.lines_names() {
+                                        for line_name in line_name_set {
+                                            upsert_line_name_map(&mut column_lines, line_name.clone(), current_line);
+                                        }
+                                        current_line += 1;
+                                    }
+                                    // Last line name set collapses with following line name set
+                                    current_line -= 1;
+                                }
+                                // Last line name set collapses with following line name set
+                                current_line -= 1;
+                            }
                         }
-                        // Last line name set collapses with following line name set
-                        current_line -= 1;
                     }
                 }
-            }
+            },
+            GridAxisKind::Subgrid => {
+                if let Some(column_context) = subgrid_context.and_then(|context| context.columns.as_ref()) {
+                    for (line_index, line_names) in column_context.line_names.iter().enumerate() {
+                        current_line = (line_index + 1) as u16;
+                        for line_name in line_names {
+                            upsert_line_name_map(&mut column_lines, line_name.clone(), current_line);
+                        }
+                    }
+                }
+                if let Some(column_line_names_iter) = style.grid_template_line_names(AbsoluteAxis::Horizontal) {
+                    for line_names in column_line_names_iter {
+                        current_line += 1;
+                        for line_name in line_names.into_iter() {
+                            upsert_line_name_map(&mut column_lines, line_name.clone(), current_line);
+                        }
+                    }
+                }
+            },
         }
         // Sort and dedup lines for each column name
         for lines in column_lines.values_mut() {
@@ -145,38 +175,60 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
         }
 
         let mut current_line = 0;
-        if let Some(mut row_tracks) = style.grid_template_rows() {
-            if let Some(row_line_names_iter) = style.grid_template_row_names() {
-                for line_names in row_line_names_iter {
-                    current_line += 1;
-                    for line_name in line_names.into_iter() {
-                        row_lines
-                            .entry(StrHasher(line_name.clone()))
-                            .and_modify(|lines: &mut Vec<u16>| lines.push(current_line))
-                            .or_insert_with(|| single_value_vec(current_line));
-                    }
-
-                    if let Some(GenericGridTemplateComponent::Repeat(repeat)) = row_tracks.next() {
-                        let repeat_count = match repeat.count() {
-                            RepetitionCount::Count(count) => count,
-                            RepetitionCount::AutoFill | RepetitionCount::AutoFit => row_auto_repetitions,
-                        };
-
-                        for _ in 0..repeat_count {
-                            for line_name_set in repeat.lines_names() {
-                                for line_name in line_name_set {
-                                    upsert_line_name_map(&mut row_lines, line_name.clone(), current_line);
-                                }
-                                current_line += 1;
+        match row_axis_kind {
+            GridAxisKind::Standalone => {
+                if let Some(mut row_tracks) = style.grid_template_rows() {
+                    if let Some(row_line_names_iter) = style.grid_template_line_names(AbsoluteAxis::Vertical) {
+                        for line_names in row_line_names_iter {
+                            current_line += 1;
+                            for line_name in line_names.into_iter() {
+                                row_lines
+                                    .entry(StrHasher(line_name.clone()))
+                                    .and_modify(|lines: &mut Vec<u16>| lines.push(current_line))
+                                    .or_insert_with(|| single_value_vec(current_line));
                             }
-                            // Last line name set collapses with following line name set
-                            current_line -= 1;
+
+                            if let Some(GenericGridTemplateComponent::Repeat(repeat)) = row_tracks.next() {
+                                let repeat_count = match repeat.count() {
+                                    RepetitionCount::Count(count) => count,
+                                    RepetitionCount::AutoFill | RepetitionCount::AutoFit => row_auto_repetitions,
+                                };
+
+                                for _ in 0..repeat_count {
+                                    for line_name_set in repeat.lines_names() {
+                                        for line_name in line_name_set {
+                                            upsert_line_name_map(&mut row_lines, line_name.clone(), current_line);
+                                        }
+                                        current_line += 1;
+                                    }
+                                    // Last line name set collapses with following line name set
+                                    current_line -= 1;
+                                }
+                                // Last line name set collapses with following line name set
+                                current_line -= 1;
+                            }
                         }
-                        // Last line name set collapses with following line name set
-                        current_line -= 1;
                     }
                 }
-            }
+            },
+            GridAxisKind::Subgrid => {
+                if let Some(row_context) = subgrid_context.and_then(|context| context.rows.as_ref()) {
+                    for (line_index, line_names) in row_context.line_names.iter().enumerate() {
+                        current_line = (line_index + 1) as u16;
+                        for line_name in line_names {
+                            upsert_line_name_map(&mut row_lines, line_name.clone(), current_line);
+                        }
+                    }
+                }
+                if let Some(row_line_names_iter) = style.grid_template_line_names(AbsoluteAxis::Vertical) {
+                    for line_names in row_line_names_iter {
+                        current_line += 1;
+                        for line_name in line_names.into_iter() {
+                            upsert_line_name_map(&mut row_lines, line_name.clone(), current_line);
+                        }
+                    }
+                }
+            },
         }
         // Sort and dedup lines for each row name
         for lines in row_lines.values_mut() {
@@ -189,10 +241,48 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
             area_row_count,
             explicit_column_count: 0, // Overwritten later
             explicit_row_count: 0,    // Overwritten later
+            column_axis_kind,
+            row_axis_kind,
             areas,
             row_lines,
             column_lines,
         }
+    }
+
+    pub(crate) fn axis_kind(&self, axis: GridAreaAxis) -> GridAxisKind {
+        match axis {
+            GridAreaAxis::Column => self.column_axis_kind,
+            GridAreaAxis::Row => self.row_axis_kind,
+        }
+    }
+
+    pub(crate) fn line_names_for_span(&self, axis: GridAreaAxis, span: Line<OriginZeroLine>) -> Vec<Vec<S>> {
+        let line_slot_count = span.span() as usize + 1;
+        let mut names_per_line = vec![Vec::new(); line_slot_count];
+        let line_map = match axis {
+            GridAreaAxis::Column => &self.column_lines,
+            GridAreaAxis::Row => &self.row_lines,
+        };
+
+        for (name, lines) in line_map {
+            for (local_index, local_names) in names_per_line.iter_mut().enumerate() {
+                let global_line = span.start.0 + local_index as i16 + 1;
+                if global_line <= 0 {
+                    continue;
+                }
+
+                if lines.binary_search(&(global_line as u16)).is_ok() {
+                    local_names.push(name.0.clone());
+                }
+            }
+        }
+
+        for line_names in &mut names_per_line {
+            line_names.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+            line_names.dedup_by(|a, b| a.as_ref() == b.as_ref());
+        }
+
+        names_per_line
     }
 
     /// Resolve named lines for both the `start` and `end` of a row-axis grid placement
@@ -265,7 +355,8 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
                 } else {
                     (explicit_track_count + 1 + end_line.as_i16()).max(0) as u16
                 };
-                let start_line = self.find_line_index(name, *idx as i16, axis, GridAreaEnd::Start, &|lines| {
+                let span_index = if *idx == 0 { -1 } else { -(*idx as i16) };
+                let start_line = self.find_line_index(name, span_index, axis, GridAreaEnd::Start, &|lines| {
                     let point = lines.partition_point(|line| *line < normalized_end_line);
                     &lines[..point]
                 });

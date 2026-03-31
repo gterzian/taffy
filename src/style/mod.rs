@@ -28,8 +28,9 @@ pub use self::float::{Clear, Float, FloatDirection};
 #[cfg(feature = "grid")]
 pub use self::grid::{
     GenericGridPlacement, GenericGridTemplateComponent, GenericRepetition, GridAutoFlow, GridAutoTracks,
-    GridContainerStyle, GridItemStyle, GridPlacement, GridTemplateComponent, GridTemplateRepetition,
-    GridTemplateTracks, MaxTrackSizingFunction, MinTrackSizingFunction, RepetitionCount, TrackSizingFunction,
+    GridAxisKind, GridContainerStyle, GridItemStyle, GridPlacement, GridTemplateComponent,
+    GridTemplateRepetition, GridTemplateTracks, MaxTrackSizingFunction, MinTrackSizingFunction,
+    RepetitionCount, TrackSizingFunction,
 };
 #[cfg(feature = "grid")]
 pub(crate) use self::grid::{GridAreaAxis, GridAreaEnd};
@@ -43,7 +44,7 @@ use crate::style_helpers::TaffyAuto as _;
 use core::fmt::Debug;
 
 #[cfg(feature = "grid")]
-use crate::geometry::Line;
+use crate::geometry::{AbsoluteAxis, Line};
 #[cfg(feature = "serde")]
 use crate::style_helpers;
 #[cfg(feature = "grid")]
@@ -548,9 +549,15 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     /// Defines the track sizing functions (heights) of the grid rows
     #[cfg(feature = "grid")]
     pub grid_template_rows: GridTrackVec<GridTemplateComponent<S>>,
+    /// Whether the row axis is subgridded.
+    #[cfg(feature = "grid")]
+    pub grid_template_rows_is_subgrid: bool,
     /// Defines the track sizing functions (widths) of the grid columns
     #[cfg(feature = "grid")]
     pub grid_template_columns: GridTrackVec<GridTemplateComponent<S>>,
+    /// Whether the column axis is subgridded.
+    #[cfg(feature = "grid")]
+    pub grid_template_columns_is_subgrid: bool,
     /// Defines the size of implicitly created rows
     #[cfg(feature = "grid")]
     pub grid_auto_rows: GridTrackVec<TrackSizingFunction>,
@@ -638,7 +645,11 @@ impl<S: CheapCloneStr> Style<S> {
         #[cfg(feature = "grid")]
         grid_template_rows: GridTrackVec::new(),
         #[cfg(feature = "grid")]
+        grid_template_rows_is_subgrid: false,
+        #[cfg(feature = "grid")]
         grid_template_columns: GridTrackVec::new(),
+        #[cfg(feature = "grid")]
+        grid_template_columns_is_subgrid: false,
         #[cfg(feature = "grid")]
         grid_template_areas: GridTrackVec::new(),
         #[cfg(feature = "grid")]
@@ -1047,6 +1058,39 @@ impl<S: CheapCloneStr> GridContainerStyle for Style<S> {
     fn grid_template_row_names(&self) -> Option<Self::TemplateLineNames<'_>> {
         Some(self.grid_template_row_names.iter().map(|names| names.iter()))
     }
+
+    #[inline(always)]
+    fn grid_axis_kind(&self, axis: AbsoluteAxis) -> GridAxisKind {
+        match axis {
+            AbsoluteAxis::Horizontal => {
+                if self.grid_template_columns_is_subgrid {
+                    GridAxisKind::Subgrid
+                } else {
+                    GridAxisKind::Standalone
+                }
+            },
+            AbsoluteAxis::Vertical => {
+                if self.grid_template_rows_is_subgrid {
+                    GridAxisKind::Subgrid
+                } else {
+                    GridAxisKind::Standalone
+                }
+            },
+        }
+    }
+
+    #[inline(always)]
+    fn subgrid_line_names(&self, axis: AbsoluteAxis) -> Option<Self::TemplateLineNames<'_>> {
+        match axis {
+            AbsoluteAxis::Horizontal if self.grid_template_columns_is_subgrid => {
+                Some(self.grid_template_column_names.iter().map(|names| names.iter()))
+            },
+            AbsoluteAxis::Vertical if self.grid_template_rows_is_subgrid => {
+                Some(self.grid_template_row_names.iter().map(|names| names.iter()))
+            },
+            _ => None,
+        }
+    }
 }
 
 #[cfg(feature = "grid")]
@@ -1110,6 +1154,14 @@ impl<T: GridContainerStyle> GridContainerStyle for &'_ T {
         (*self).grid_template_row_names()
     }
     #[inline(always)]
+    fn grid_axis_kind(&self, axis: AbsoluteAxis) -> GridAxisKind {
+        (*self).grid_axis_kind(axis)
+    }
+    #[inline(always)]
+    fn subgrid_line_names(&self, axis: AbsoluteAxis) -> Option<Self::TemplateLineNames<'_>> {
+        (*self).subgrid_line_names(axis)
+    }
+    #[inline(always)]
     fn grid_auto_flow(&self) -> GridAutoFlow {
         (*self).grid_auto_flow()
     }
@@ -1155,6 +1207,10 @@ impl<S: CheapCloneStr> GridItemStyle for Style<S> {
     fn justify_self(&self) -> Option<AlignSelf> {
         self.justify_self
     }
+    #[inline(always)]
+    fn subgrid_axis_kind(&self, axis: AbsoluteAxis) -> GridAxisKind {
+        self.grid_axis_kind(axis)
+    }
 }
 
 #[cfg(feature = "grid")]
@@ -1174,6 +1230,38 @@ impl<T: GridItemStyle> GridItemStyle for &'_ T {
     #[inline(always)]
     fn justify_self(&self) -> Option<AlignSelf> {
         (*self).justify_self()
+    }
+    #[inline(always)]
+    fn subgrid_axis_kind(&self, axis: AbsoluteAxis) -> GridAxisKind {
+        (*self).subgrid_axis_kind(axis)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GridAxisKind, GridContainerStyle, Style};
+    use crate::geometry::AbsoluteAxis;
+    use crate::sys::Vec;
+
+    #[test]
+    fn style_reports_subgrid_axis_state_and_local_line_names() {
+        let style = Style::<String> {
+            grid_template_columns_is_subgrid: true,
+            grid_template_column_names: vec![vec!["alpha".into()], vec!["beta".into(), "gamma".into()]],
+            ..Default::default()
+        };
+
+        assert_eq!(style.grid_axis_kind(AbsoluteAxis::Horizontal), GridAxisKind::Subgrid);
+        assert_eq!(style.grid_axis_kind(AbsoluteAxis::Vertical), GridAxisKind::Standalone);
+
+        let line_names = style
+            .subgrid_line_names(AbsoluteAxis::Horizontal)
+            .unwrap()
+            .map(|set| set.cloned().collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        assert_eq!(line_names, vec![vec!["alpha".to_owned()], vec!["beta".to_owned(), "gamma".to_owned()]]);
+
+        assert!(style.subgrid_line_names(AbsoluteAxis::Vertical).is_none());
     }
 }
 

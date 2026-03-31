@@ -136,6 +136,8 @@ use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
 #[cfg(feature = "grid")]
 use crate::style::{GridContainerStyle, GridItemStyle};
 use crate::CheapCloneStr;
+#[cfg(feature = "grid")]
+use crate::util::sys::Vec;
 #[cfg(feature = "block_layout")]
 use crate::{BlockContainerStyle, BlockContext, BlockItemStyle};
 
@@ -255,6 +257,30 @@ pub trait LayoutFlexboxContainer: LayoutPartialTree {
 }
 
 #[cfg(feature = "grid")]
+/// Parent-derived information that a subgrid axis needs while laying itself out.
+#[derive(Clone, Debug, Default)]
+pub struct SubgridAxisContext<S: CheapCloneStr> {
+    /// The used track count covered by the subgrid item in the parent axis.
+    pub track_count: u16,
+    /// Adopted parent line names re-indexed into the subgrid's local line space.
+    pub line_names: Vec<Vec<S>>,
+    /// Parent used track sizes for the covered span, when available.
+    pub track_sizes: Vec<f32>,
+    /// Parent used gutter sizes between the covered tracks, when available.
+    pub gutter_sizes: Vec<f32>,
+}
+
+#[cfg(feature = "grid")]
+/// Parent-derived information for any subgridded axes of a grid container.
+#[derive(Clone, Debug, Default)]
+pub struct SubgridContext<S: CheapCloneStr> {
+    /// Horizontal-axis subgrid context, if the container subgrids columns.
+    pub columns: Option<SubgridAxisContext<S>>,
+    /// Vertical-axis subgrid context, if the container subgrids rows.
+    pub rows: Option<SubgridAxisContext<S>>,
+}
+
+#[cfg(feature = "grid")]
 /// Extends [`LayoutPartialTree`] with getters for the styles required for CSS Grid layout
 pub trait LayoutGridContainer: LayoutPartialTree {
     /// The style type representing the CSS Grid container's styles
@@ -272,6 +298,22 @@ pub trait LayoutGridContainer: LayoutPartialTree {
 
     /// Get the child's styles
     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_>;
+
+    /// Stash parent-derived subgrid context for a direct child before it is measured or laid out.
+    fn set_grid_child_subgrid_context(
+        &mut self,
+        _child_node_id: NodeId,
+        _context: Option<SubgridContext<Self::CustomIdent>>,
+    ) {
+    }
+
+    /// Get the parent-derived subgrid context for the grid container currently being laid out.
+    fn get_grid_container_subgrid_context(
+        &self,
+        _node_id: NodeId,
+    ) -> Option<&SubgridContext<Self::CustomIdent>> {
+        None
+    }
 
     /// Set the node's detailed grid information
     ///

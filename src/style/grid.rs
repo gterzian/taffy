@@ -132,6 +132,17 @@ where
     }
 }
 
+/// Whether a grid axis is standalone or subgridded.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum GridAxisKind {
+    /// A standalone axis with independently defined tracks.
+    #[default]
+    Standalone,
+    /// A subgridded axis that adopts the corresponding span from the parent grid.
+    Subgrid,
+}
+
 /// The set of styles required for a CSS Grid container
 pub trait GridContainerStyle: CoreStyle {
     /// The type for a `repeat()` within a grid_template_rows or grid_template_columns
@@ -181,6 +192,18 @@ pub trait GridContainerStyle: CoreStyle {
     /// Defines the size of implicitly created rows
     fn grid_template_row_names(&self) -> Option<Self::TemplateLineNames<'_>>;
 
+    /// Whether the specified axis is standalone or subgridded.
+    #[inline(always)]
+    fn grid_axis_kind(&self, _axis: AbsoluteAxis) -> GridAxisKind {
+        GridAxisKind::Standalone
+    }
+
+    /// Local line names specified on a subgridded axis.
+    #[inline(always)]
+    fn subgrid_line_names(&self, _axis: AbsoluteAxis) -> Option<Self::TemplateLineNames<'_>> {
+        None
+    }
+
     /// Controls how items get placed into the grid for auto-placed items
     #[inline(always)]
     fn grid_auto_flow(&self) -> GridAutoFlow {
@@ -225,6 +248,18 @@ pub trait GridContainerStyle: CoreStyle {
         }
     }
 
+    /// Get the line-name list for an axis, taking subgrid axes from `subgrid_line_names`.
+    #[inline(always)]
+    fn grid_template_line_names(&self, axis: AbsoluteAxis) -> Option<Self::TemplateLineNames<'_>> {
+        match self.grid_axis_kind(axis) {
+            GridAxisKind::Standalone => match axis {
+                AbsoluteAxis::Horizontal => self.grid_template_column_names(),
+                AbsoluteAxis::Vertical => self.grid_template_row_names(),
+            },
+            GridAxisKind::Subgrid => self.subgrid_line_names(axis),
+        }
+    }
+
     /// Get a grid container's align-content or justify-content alignment depending on the axis passed
     #[inline(always)]
     fn grid_align_content(&self, axis: AbstractAxis) -> AlignContent {
@@ -259,6 +294,12 @@ pub trait GridItemStyle: CoreStyle {
     #[inline(always)]
     fn justify_self(&self) -> Option<AlignSelf> {
         Style::<Self::CustomIdent>::DEFAULT.justify_self
+    }
+
+    /// Whether this item subgrids the given axis.
+    #[inline(always)]
+    fn subgrid_axis_kind(&self, _axis: AbsoluteAxis) -> GridAxisKind {
+        GridAxisKind::Standalone
     }
 
     /// Get a grid item's row or column placement depending on the axis passed
