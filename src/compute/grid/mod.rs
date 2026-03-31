@@ -51,6 +51,110 @@ fn track_sizes_for_item_span(tracks: &[GridTrack], placement_indexes: Line<u16>)
     (track_sizes, gutter_sizes)
 }
 
+fn update_child_subgrid_contexts<Tree: LayoutGridContainer>(
+    tree: &mut Tree,
+    name_resolver: &NamedLineResolver<Tree::CustomIdent>,
+    columns: &[GridTrack],
+    rows: &[GridTrack],
+    items: &[GridItem],
+) {
+    for item in items {
+        let child_style = tree.get_grid_child_style(item.node);
+        let horizontal_is_subgrid = child_style.subgrid_axis_kind(AbsoluteAxis::Horizontal) == GridAxisKind::Subgrid;
+        let vertical_is_subgrid = child_style.subgrid_axis_kind(AbsoluteAxis::Vertical) == GridAxisKind::Subgrid;
+        drop(child_style);
+
+        let mut child_subgrid_context = SubgridContext::default();
+
+        if horizontal_is_subgrid {
+            let (track_sizes, gutter_sizes) = track_sizes_for_item_span(columns, item.column_indexes);
+            child_subgrid_context.columns = Some(SubgridAxisContext {
+                track_count: item.column.span(),
+                line_names: name_resolver.line_names_for_span(GridAreaAxis::Column, item.column),
+                track_sizes,
+                gutter_sizes,
+            });
+        }
+
+        if vertical_is_subgrid {
+            let (track_sizes, gutter_sizes) = track_sizes_for_item_span(rows, item.row_indexes);
+            child_subgrid_context.rows = Some(SubgridAxisContext {
+                track_count: item.row.span(),
+                line_names: name_resolver.line_names_for_span(GridAreaAxis::Row, item.row),
+                track_sizes,
+                gutter_sizes,
+            });
+        }
+
+        let child_subgrid_context = if child_subgrid_context.columns.is_some() || child_subgrid_context.rows.is_some() {
+            Some(child_subgrid_context)
+        } else {
+            None
+        };
+        tree.set_grid_child_subgrid_context(item.node, child_subgrid_context);
+    }
+}
+
+fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
+    direction: Direction,
+    content_box_inset: Rect<f32>,
+    subgrid_context: Option<&SubgridContext<S>>,
+    resolved_gap: Size<f32>,
+    items: &mut [GridItem],
+) {
+    fn apply_axis(axis: AbstractAxis, inherited_gutter_sizes: &[f32], current_gap: f32, edge_adjustment: Line<f32>, items: &mut [GridItem]) {
+        for item in items.iter_mut() {
+            let placement = item.placement(axis);
+
+            let start_adjustment = if placement.start.0 <= 0 {
+                edge_adjustment.start
+            } else {
+                let parent_gutter = inherited_gutter_sizes.get((placement.start.0 - 1) as usize).copied().unwrap_or(0.0);
+                (current_gap - parent_gutter) * 0.5
+            };
+
+            let end_adjustment = if placement.end.0 >= inherited_gutter_sizes.len() as i16 + 1 {
+                edge_adjustment.end
+            } else {
+                let parent_gutter = inherited_gutter_sizes.get((placement.end.0 - 1) as usize).copied().unwrap_or(0.0);
+                (current_gap - parent_gutter) * 0.5
+            };
+
+            match axis {
+                AbstractAxis::Inline => {
+                    item.subgrid_margin_adjustment.left += start_adjustment;
+                    item.subgrid_margin_adjustment.right += end_adjustment;
+                }
+                AbstractAxis::Block => {
+                    item.subgrid_margin_adjustment.top += start_adjustment;
+                    item.subgrid_margin_adjustment.bottom += end_adjustment;
+                }
+            }
+        }
+    }
+
+    if subgrid_context.and_then(|context| context.columns.as_ref()).is_some() {
+        let inherited = subgrid_context
+            .and_then(|context| context.columns.as_ref())
+            .map(|context| context.gutter_sizes.as_slice())
+            .unwrap_or(&[]);
+        let inline_edge_adjustment = if direction.is_rtl() {
+            Line { start: content_box_inset.right, end: content_box_inset.left }
+        } else {
+            Line { start: content_box_inset.left, end: content_box_inset.right }
+        };
+        apply_axis(AbstractAxis::Inline, inherited, resolved_gap.width, inline_edge_adjustment, items);
+    }
+
+    if subgrid_context.and_then(|context| context.rows.as_ref()).is_some() {
+        let inherited = subgrid_context
+            .and_then(|context| context.rows.as_ref())
+            .map(|context| context.gutter_sizes.as_slice())
+            .unwrap_or(&[]);
+        apply_axis(AbstractAxis::Block, inherited, resolved_gap.height, Line { start: content_box_inset.top, end: content_box_inset.bottom }, items);
+    }
+}
+
 /// Grid layout algorithm
 /// This consists of a few phases:
 ///   - Resolving the explicit grid
@@ -65,7 +169,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let LayoutInput { known_dimensions, parent_size, available_space, run_mode, .. } = inputs;
 
     let style = tree.get_grid_container_style(node);
-    let subgrid_context = tree.get_grid_container_subgrid_context(node);
+    let subgrid_context = tree.get_grid_container_subgrid_context(node).cloned();
     let direction = style.direction();
 
     // 1. Compute "available grid space"
@@ -147,6 +251,9 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         width: outer_node_size.width.map(|space| space - content_box_inset.horizontal_axis_sum()),
         height: outer_node_size.height.map(|space| space - content_box_inset.vertical_axis_sum()),
     };
+    let resolved_gap = style
+        .gap()
+        .map(|gap| gap.resolve_or_zero(inner_node_size.width, |val, basis| tree.calc(val, basis)));
 
     debug_log!("parent_size", dbg:parent_size);
     debug_log!("outer_node_size", dbg:outer_node_size);
@@ -190,7 +297,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         auto_fit_container_size.width,
         auto_repeat_fit_strategy.width,
         |val, basis| tree.calc(val, basis),
-        subgrid_context.and_then(|context| context.columns.as_ref()),
+        subgrid_context.as_ref().and_then(|context| context.columns.as_ref()),
         AbsoluteAxis::Horizontal,
     );
     let (row_auto_repetition_count, grid_template_row_count) = compute_explicit_grid_size_in_axis(
@@ -198,19 +305,21 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         auto_fit_container_size.height,
         auto_repeat_fit_strategy.height,
         |val, basis| tree.calc(val, basis),
-        subgrid_context.and_then(|context| context.rows.as_ref()),
+        subgrid_context.as_ref().and_then(|context| context.rows.as_ref()),
         AbsoluteAxis::Vertical,
     );
 
     // type CustomIdent<'a> = <<Tree as LayoutPartialTree>::CoreContainerStyle<'_> as CoreStyle>::CustomIdent;
     let mut name_resolver =
-        NamedLineResolver::new(&style, col_auto_repetition_count, row_auto_repetition_count, subgrid_context);
+        NamedLineResolver::new(&style, col_auto_repetition_count, row_auto_repetition_count, subgrid_context.as_ref());
 
     let explicit_col_count = subgrid_context
+        .as_ref()
         .and_then(|context| context.columns.as_ref())
         .map(|context| context.track_count)
         .unwrap_or_else(|| grid_template_col_count.max(name_resolver.area_column_count()));
     let explicit_row_count = subgrid_context
+        .as_ref()
         .and_then(|context| context.rows.as_ref())
         .map(|context| context.track_count)
         .unwrap_or_else(|| grid_template_row_count.max(name_resolver.area_row_count()));
@@ -296,7 +405,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         &mut columns,
         column_track_counts_for_init,
         &style,
-        subgrid_context.and_then(|context| context.columns.as_ref()),
+        subgrid_context.as_ref().and_then(|context| context.columns.as_ref()),
         AbsoluteAxis::Horizontal,
         |column_index| {
             let occupancy_index = if direction.is_rtl() {
@@ -311,7 +420,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         &mut rows,
         final_row_counts,
         &style,
-        subgrid_context.and_then(|context| context.rows.as_ref()),
+        subgrid_context.as_ref().and_then(|context| context.rows.as_ref()),
         AbsoluteAxis::Vertical,
         |row_index| cell_occupancy_matrix.row_is_occupied(row_index),
     );
@@ -335,6 +444,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // This computation is relatively trivial, but it requires the final number of negative (implicit) tracks in
     // each axis, and doing it up-front here means we don't have to keep repeating that calculation
     resolve_item_track_indexes(&mut items, final_col_counts, final_row_counts);
+    update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items);
+    apply_subgrid_item_margin_adjustments(direction, content_box_inset, subgrid_context.as_ref(), resolved_gap, &mut items);
     // For each item, and in each axis, determine whether the item crosses any flexible (fr) tracks
     // Record this as a boolean (per-axis) on each item for later use in the track-sizing algorithm
     determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut items, &columns, &rows);
@@ -362,6 +473,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     );
     let initial_column_sum = columns.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.width = inner_node_size.width.or_else(|| initial_column_sum.into());
+    update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items);
 
     items.iter_mut().for_each(|item| item.available_space_cache = None);
 
@@ -383,6 +495,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     );
     let initial_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.height = inner_node_size.height.or_else(|| initial_row_sum.into());
+    update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items);
 
     debug_log!("initial_column_sum", dbg:initial_column_sum);
     debug_log!(dbg: columns.iter().map(|track| track.base_size).collect::<Vec<_>>());
@@ -511,6 +624,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             |track: &GridTrack, _, _| Some(track.base_size),
             has_baseline_aligned_item,
         );
+        update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items);
 
         // Row sizing must be re-run (once) if:
         //   - The grid container's height was initially indefinite and there are any rows with percentage track sizing functions
@@ -579,6 +693,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 |track: &GridTrack, _, _| Some(track.base_size),
                 false, // TODO: Support baseline alignment in the vertical axis
             );
+            update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items);
         }
     }
 
@@ -640,40 +755,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         false,
     );
 
-    for item in &items {
-        let child_style = tree.get_grid_child_style(item.node);
-        let horizontal_is_subgrid = child_style.subgrid_axis_kind(AbsoluteAxis::Horizontal) == GridAxisKind::Subgrid;
-        let vertical_is_subgrid = child_style.subgrid_axis_kind(AbsoluteAxis::Vertical) == GridAxisKind::Subgrid;
-        drop(child_style);
-        let mut child_subgrid_context = SubgridContext::default();
-
-        if horizontal_is_subgrid {
-            let (track_sizes, gutter_sizes) = track_sizes_for_item_span(&columns, item.column_indexes);
-            child_subgrid_context.columns = Some(SubgridAxisContext {
-                track_count: item.column.span(),
-                line_names: name_resolver.line_names_for_span(GridAreaAxis::Column, item.column),
-                track_sizes,
-                gutter_sizes,
-            });
-        }
-
-        if vertical_is_subgrid {
-            let (track_sizes, gutter_sizes) = track_sizes_for_item_span(&rows, item.row_indexes);
-            child_subgrid_context.rows = Some(SubgridAxisContext {
-                track_count: item.row.span(),
-                line_names: name_resolver.line_names_for_span(GridAreaAxis::Row, item.row),
-                track_sizes,
-                gutter_sizes,
-            });
-        }
-
-        let child_subgrid_context = if child_subgrid_context.columns.is_some() || child_subgrid_context.rows.is_some() {
-            Some(child_subgrid_context)
-        } else {
-            None
-        };
-        tree.set_grid_child_subgrid_context(item.node, child_subgrid_context);
-    }
+    update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items);
 
     // 9. Size, Align, and Position Grid Items
 
@@ -701,6 +783,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             grid_area,
             container_alignment_styles,
             item.baseline_shim,
+            item.subgrid_margin_adjustment,
             direction,
         );
         item.y_position = y_position;
@@ -714,6 +797,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // Position hidden and absolutely positioned children
     let mut order = items.len() as u32;
+
     (0..tree.child_count(node)).for_each(|index| {
         let child = tree.get_child_id(node, index);
         let child_style = tree.get_grid_child_style(child);
@@ -794,7 +878,16 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)
             #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
             let (content_size_contribution, _, _) =
-                align_and_position_item(tree, child, order, grid_area, container_alignment_styles, 0.0, direction);
+                align_and_position_item(
+                    tree,
+                    child,
+                    order,
+                    grid_area,
+                    container_alignment_styles,
+                    0.0,
+                    Rect::ZERO,
+                    direction,
+                );
             #[cfg(feature = "content_size")]
             {
                 item_content_size_contribution = item_content_size_contribution.f32_max(content_size_contribution);

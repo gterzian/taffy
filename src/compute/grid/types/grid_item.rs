@@ -53,6 +53,12 @@ pub(in super::super) struct GridItem {
     pub align_self: AlignSelf,
     /// The item's justify_self property, or the parent's justify_items property is not set
     pub justify_self: AlignSelf,
+    /// Whether the item subgrids rows or behaves as a standalone grid in that axis.
+    pub row_axis_kind: GridAxisKind,
+    /// Whether the item subgrids columns or behaves as a standalone grid in that axis.
+    pub column_axis_kind: GridAxisKind,
+    /// Extra margin-like space inherited from ancestor subgrid edges and gutter differences.
+    pub subgrid_margin_adjustment: Rect<f32>,
     /// The items first baseline (horizontal)
     pub baseline: Option<f32>,
     /// Shim for baseline alignment that acts like an extra top margin
@@ -139,6 +145,9 @@ impl GridItem {
                 GridAxisKind::Subgrid => AlignSelf::Stretch,
                 GridAxisKind::Standalone => style.justify_self().unwrap_or(parent_justify_items),
             },
+            row_axis_kind: style.subgrid_axis_kind(crate::geometry::AbsoluteAxis::Vertical),
+            column_axis_kind: style.subgrid_axis_kind(crate::geometry::AbsoluteAxis::Horizontal),
+            subgrid_margin_adjustment: Rect::ZERO,
             baseline: None,
             baseline_shim: 0.0,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
@@ -203,6 +212,44 @@ impl GridItem {
         match axis {
             AbstractAxis::Inline => self.crosses_intrinsic_column,
             AbstractAxis::Block => self.crosses_intrinsic_row,
+        }
+    }
+
+    /// Whether this item subgrids the specified axis.
+    pub fn subgrids_axis(&self, axis: AbstractAxis) -> bool {
+        match axis {
+            AbstractAxis::Inline => self.column_axis_kind == GridAxisKind::Subgrid,
+            AbstractAxis::Block => self.row_axis_kind == GridAxisKind::Subgrid,
+        }
+    }
+
+    fn empty_subgrid_padding_border_floor(
+        &self,
+        axis: AbstractAxis,
+        tree: &impl LayoutPartialTree,
+        inner_node_size: Size<Option<f32>>,
+    ) -> f32 {
+        if !self.subgrids_axis(axis) || tree.child_count(self.node) != 0 {
+            return 0.0;
+        }
+
+        let percentage_basis = inner_node_size.width;
+        let padding = Rect {
+            left: self.padding.left.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
+            right: self.padding.right.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
+            top: self.padding.top.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
+            bottom: self.padding.bottom.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
+        };
+        let border = Rect {
+            left: self.border.left.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
+            right: self.border.right.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
+            top: self.border.top.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
+            bottom: self.border.bottom.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
+        };
+
+        match axis {
+            AbstractAxis::Inline => padding.left + border.left + padding.right + border.right,
+            AbstractAxis::Block => padding.top + border.top + padding.bottom + border.bottom,
         }
     }
 
@@ -418,13 +465,13 @@ impl GridItem {
         inner_node_width: Option<f32>,
         tree: &impl LayoutPartialTree,
     ) -> Size<f32> {
-        Rect {
+        (Rect {
             left: self.margin.left.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
             right: self.margin.right.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
             top: self.margin.top.resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis))
                 + self.baseline_shim,
             bottom: self.margin.bottom.resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis)),
-        }
+        } + self.subgrid_margin_adjustment)
         .sum_axes()
     }
 
@@ -454,6 +501,7 @@ impl GridItem {
             axis.as_abs_naive(),
             Line::FALSE,
         )
+        .max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size))
     }
 
     /// Retrieve the item's min content contribution from the cache or compute it using the provided parameters
@@ -496,6 +544,7 @@ impl GridItem {
             axis.as_abs_naive(),
             Line::FALSE,
         )
+        .max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size))
     }
 
     /// Retrieve the item's max content contribution from the cache or compute it using the provided parameters
@@ -601,7 +650,9 @@ impl GridItem {
         let limit = self.spanned_fixed_track_limit(axis, axis_tracks, inner_node_size.get(axis), &|val, basis| {
             tree.resolve_calc_value(val, basis)
         });
-        size.maybe_min(limit)
+        size
+            .max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size))
+            .maybe_min(limit)
     }
 
     /// Retrieve the item's minimum contribution from the cache or compute it using the provided parameters

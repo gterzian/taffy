@@ -122,6 +122,37 @@ fn maybe_clamp_subgrid_span(
     clamp_span_to_explicit_grid(span, explicit_track_count)
 }
 
+#[inline]
+fn is_span_out_of_explicit_grid(
+    span: Line<OriginZeroLine>,
+    axis: AbsoluteAxis,
+    named_line_resolver: &NamedLineResolver<impl crate::CheapCloneStr>,
+    explicit_col_count: u16,
+    explicit_row_count: u16,
+    axis_is_reversed: bool,
+) -> bool {
+    let axis_kind = match axis {
+        AbsoluteAxis::Horizontal => named_line_resolver.axis_kind(GridAreaAxis::Column),
+        AbsoluteAxis::Vertical => named_line_resolver.axis_kind(GridAreaAxis::Row),
+    };
+
+    if axis_kind != GridAxisKind::Subgrid {
+        return false;
+    }
+
+    let grid_start = 0;
+    let grid_end = match axis {
+        AbsoluteAxis::Horizontal => explicit_col_count as i16,
+        AbsoluteAxis::Vertical => explicit_row_count as i16,
+    };
+
+    if axis_is_reversed {
+        span.start.0 < grid_start
+    } else {
+        span.end.0 > grid_end
+    }
+}
+
 /// 8.5. Grid Item Placement Algorithm
 /// Place items into the grid, generating new rows/column into the implicit grid as required
 ///
@@ -405,8 +436,36 @@ fn place_definite_secondary_axis_item(
 
     let mut position: OriginZeroLine = starting_position;
     loop {
-        let primary_axis_placement =
+        let raw_primary_axis_placement =
             resolve_indefinite_grid_span(position, primary_axis_span, primary_axis_is_reversed);
+
+        if is_span_out_of_explicit_grid(
+            raw_primary_axis_placement,
+            primary_axis,
+            named_line_resolver,
+            explicit_col_count,
+            explicit_row_count,
+            primary_axis_is_reversed,
+        ) {
+            return (
+                maybe_clamp_subgrid_span(
+                    raw_primary_axis_placement,
+                    primary_axis,
+                    named_line_resolver,
+                    explicit_col_count,
+                    explicit_row_count,
+                ),
+                secondary_axis_placement,
+            );
+        }
+
+        let primary_axis_placement = maybe_clamp_subgrid_span(
+            raw_primary_axis_placement,
+            primary_axis,
+            named_line_resolver,
+            explicit_col_count,
+            explicit_row_count,
+        );
 
         let does_fit = cell_occupancy_matrix.line_area_is_unoccupied(
             primary_axis,
@@ -494,8 +553,22 @@ fn place_indefinitely_positioned_item(
         // Item has fixed primary axis position: so we simply increment the secondary axis position
         // until we find a space that the item fits in
         loop {
+            let raw_secondary_span = resolve_indefinite_grid_span(secondary_idx, secondary_span, secondary_axis_is_reversed);
+
+            if is_span_out_of_explicit_grid(
+                raw_secondary_span,
+                secondary_axis,
+                named_line_resolver,
+                explicit_col_count,
+                explicit_row_count,
+                secondary_axis_is_reversed,
+            ) {
+                secondary_idx = advance_position(secondary_idx, secondary_axis_is_reversed);
+                continue;
+            }
+
             let secondary_span = maybe_clamp_subgrid_span(
-                resolve_indefinite_grid_span(secondary_idx, secondary_span, secondary_axis_is_reversed),
+                raw_secondary_span,
                 secondary_axis,
                 named_line_resolver,
                 explicit_col_count,
@@ -518,33 +591,57 @@ fn place_indefinitely_positioned_item(
         // existent tracks, and then we reset the primary axis back to zero and increment the secondary axis index.
         // We continue in this vein until we find a space that the item fits in.
         loop {
+            let raw_primary_span = resolve_indefinite_grid_span(primary_idx, primary_span, primary_axis_is_reversed);
+            let raw_secondary_span = resolve_indefinite_grid_span(secondary_idx, secondary_span, secondary_axis_is_reversed);
+
+            let primary_out_of_bounds = is_span_out_of_explicit_grid(
+                raw_primary_span,
+                primary_axis,
+                named_line_resolver,
+                explicit_col_count,
+                explicit_row_count,
+                primary_axis_is_reversed,
+            ) || if primary_axis_is_reversed {
+                raw_primary_span.start < primary_axis_grid_start_line
+            } else {
+                raw_primary_span.end > primary_axis_grid_end_line
+            };
+
+            // If the primary index is out of bounds, then increment the secondary index and reset the primary
+            // index back to the start of the grid
+            if primary_out_of_bounds {
+                secondary_idx = advance_position(secondary_idx, secondary_axis_is_reversed);
+                primary_idx = primary_start_position;
+                continue;
+            }
+
+            if is_span_out_of_explicit_grid(
+                raw_secondary_span,
+                secondary_axis,
+                named_line_resolver,
+                explicit_col_count,
+                explicit_row_count,
+                secondary_axis_is_reversed,
+            ) {
+                secondary_idx = advance_position(secondary_idx, secondary_axis_is_reversed);
+                primary_idx = primary_start_position;
+                continue;
+            }
+
             let primary_span = maybe_clamp_subgrid_span(
-                resolve_indefinite_grid_span(primary_idx, primary_span, primary_axis_is_reversed),
+                raw_primary_span,
                 primary_axis,
                 named_line_resolver,
                 explicit_col_count,
                 explicit_row_count,
             );
             let secondary_span = maybe_clamp_subgrid_span(
-                resolve_indefinite_grid_span(secondary_idx, secondary_span, secondary_axis_is_reversed),
+                raw_secondary_span,
                 secondary_axis,
                 named_line_resolver,
                 explicit_col_count,
                 explicit_row_count,
             );
-
-            // If the primary index is out of bounds, then increment the secondary index and reset the primary
-            // index back to the start of the grid
-            let primary_out_of_bounds = if primary_axis_is_reversed {
-                primary_span.start < primary_axis_grid_start_line
-            } else {
-                primary_span.end > primary_axis_grid_end_line
-            };
-            if primary_out_of_bounds {
-                secondary_idx = advance_position(secondary_idx, secondary_axis_is_reversed);
-                primary_idx = primary_start_position;
-                continue;
-            }
 
             // If area is occupied, increment the primary index and try again
             if line_area_is_occupied(primary_span, secondary_span) {
