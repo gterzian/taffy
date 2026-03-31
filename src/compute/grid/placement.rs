@@ -563,8 +563,16 @@ fn place_indefinitely_positioned_item(
                 explicit_row_count,
                 secondary_axis_is_reversed,
             ) {
-                secondary_idx = advance_position(secondary_idx, secondary_axis_is_reversed);
-                continue;
+                return (
+                    primary_span,
+                    maybe_clamp_subgrid_span(
+                        raw_secondary_span,
+                        secondary_axis,
+                        named_line_resolver,
+                        explicit_col_count,
+                        explicit_row_count,
+                    ),
+                );
             }
 
             let secondary_span = maybe_clamp_subgrid_span(
@@ -623,9 +631,22 @@ fn place_indefinitely_positioned_item(
                 explicit_row_count,
                 secondary_axis_is_reversed,
             ) {
-                secondary_idx = advance_position(secondary_idx, secondary_axis_is_reversed);
-                primary_idx = primary_start_position;
-                continue;
+                return (
+                    maybe_clamp_subgrid_span(
+                        raw_primary_span,
+                        primary_axis,
+                        named_line_resolver,
+                        explicit_col_count,
+                        explicit_row_count,
+                    ),
+                    maybe_clamp_subgrid_span(
+                        raw_secondary_span,
+                        secondary_axis,
+                        named_line_resolver,
+                        explicit_col_count,
+                        explicit_row_count,
+                    ),
+                );
             }
 
             let primary_span = maybe_clamp_subgrid_span(
