@@ -233,7 +233,9 @@ pub(super) fn initialize_grid_tracks<S: CheapCloneStr>(
         }
     }
 
-    let mut current_track_index = (counts.negative_implicit) as usize;
+    let explicit_grid_end = counts.negative_implicit + counts.explicit;
+    let explicit_grid_end_usize = explicit_grid_end as usize;
+    let mut current_track_index = counts.negative_implicit as usize;
 
     // Create explicit tracks
     // An explicit check against the count (rather than just relying on track_template being empty) is required here
@@ -243,6 +245,9 @@ pub(super) fn initialize_grid_tracks<S: CheapCloneStr>(
             track_template.clone().for_each(|track_sizing_function| {
                 match track_sizing_function {
                     GenericGridTemplateComponent::Single(sizing_function) => {
+                        if current_track_index >= explicit_grid_end_usize {
+                            return;
+                        }
                         tracks.push(GridTrack::new(
                             sizing_function.min_sizing_function(),
                             sizing_function.max_sizing_function(),
@@ -252,8 +257,11 @@ pub(super) fn initialize_grid_tracks<S: CheapCloneStr>(
                     }
                     GenericGridTemplateComponent::Repeat(repeat) => match repeat.count() {
                         RepetitionCount::Count(count) => {
+                            let remaining_explicit_tracks = explicit_grid_end_usize.saturating_sub(current_track_index);
                             let track_iter = repeat.tracks();
-                            let track_iter = track_iter.cycle().take(repeat.track_count() as usize * count as usize);
+                            let track_iter = track_iter
+                                .cycle()
+                                .take((repeat.track_count() as usize * count as usize).min(remaining_explicit_tracks));
                             track_iter.for_each(|sizing_function| {
                                 tracks.push(GridTrack::new(
                                     sizing_function.min_sizing_function(),
@@ -264,10 +272,25 @@ pub(super) fn initialize_grid_tracks<S: CheapCloneStr>(
                             });
                         }
                         RepetitionCount::AutoFit | RepetitionCount::AutoFill => {
+<<<<<<< HEAD
                             let auto_repeated_track_count =
                                 (counts.explicit - (track_template.len() as u16 - 1)) as usize;
+=======
+                            // Auto-repeat contributes the explicit tracks left after accounting for every
+                            // non-auto explicit track in the template, including fixed repeats and any tracks
+                            // that appear after the auto-repeat clause.
+                            // CSS Grid defines auto-repeat as part of the explicit grid and sizes it by
+                            // expanding the repeat-to-fill clause within the explicit track list, but the
+                            // used explicit grid still bounds the total number of explicit tracks we can
+                            // materialize here.
+                            // https://drafts.csswg.org/css-grid-2/#explicit-grids
+                            // https://drafts.csswg.org/css-grid-2/#auto-repeat
+                            let auto_repeated_track_count =
+                                counts.explicit.saturating_sub(non_auto_repeating_track_count) as usize;
+                            let remaining_explicit_tracks = explicit_grid_end_usize.saturating_sub(current_track_index);
+>>>>>>> f578cc54 (Fix subgrid explicit track initialization bounds)
                             let iter = repeat.tracks().cycle();
-                            for track_def in iter.take(auto_repeated_track_count) {
+                            for track_def in iter.take(auto_repeated_track_count.min(remaining_explicit_tracks)) {
                                 let mut track =
                                     GridTrack::new(track_def.min_sizing_function(), track_def.max_sizing_function());
                                 let mut gutter = GridTrack::gutter(gap);
@@ -291,7 +314,8 @@ pub(super) fn initialize_grid_tracks<S: CheapCloneStr>(
             let inherited_track_sizes = subgrid_context.map(|context| context.track_sizes.as_slice()).unwrap_or(&[]);
             let inherited_gutter_sizes = subgrid_context.map(|context| context.gutter_sizes.as_slice()).unwrap_or(&[]);
 
-            for track_index in 0..counts.explicit as usize {
+            let remaining_explicit_tracks = explicit_grid_end_usize.saturating_sub(current_track_index);
+            for track_index in 0..remaining_explicit_tracks {
                 let track = inherited_track_sizes.get(track_index).map_or_else(
                     || {
                         GridTrack::new(
@@ -324,7 +348,11 @@ pub(super) fn initialize_grid_tracks<S: CheapCloneStr>(
         }
     }
 
+<<<<<<< HEAD
     let grid_area_tracks = (counts.negative_implicit + counts.explicit) - current_track_index as u16;
+=======
+    let grid_area_tracks = explicit_grid_end.saturating_sub(current_track_index as u16);
+>>>>>>> f578cc54 (Fix subgrid explicit track initialization bounds)
 
     // Create positive implicit tracks
     if auto_track_count == 0 {

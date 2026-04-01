@@ -650,9 +650,7 @@ impl GridItem {
         let limit = self.spanned_fixed_track_limit(axis, axis_tracks, inner_node_size.get(axis), &|val, basis| {
             tree.resolve_calc_value(val, basis)
         });
-        size
-            .max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size))
-            .maybe_min(limit)
+        size.max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size)).maybe_min(limit)
     }
 
     /// Retrieve the item's minimum contribution from the cache or compute it using the provided parameters
