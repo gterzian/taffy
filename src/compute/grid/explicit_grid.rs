@@ -241,6 +241,7 @@ pub(super) fn initialize_grid_tracks<S: CheapCloneStr>(
     // An explicit check against the count (rather than just relying on track_template being empty) is required here
     // because a count of zero can result from the track_template being invalid, in which case it should be ignored.
     if counts.explicit > 0 {
+        let remaining_explicit_tracks = explicit_grid_end_usize.saturating_sub(current_track_index);
         if let Some(track_template) = track_template {
             track_template.clone().for_each(|track_sizing_function| {
                 match track_sizing_function {
@@ -257,7 +258,6 @@ pub(super) fn initialize_grid_tracks<S: CheapCloneStr>(
                     }
                     GenericGridTemplateComponent::Repeat(repeat) => match repeat.count() {
                         RepetitionCount::Count(count) => {
-                            let remaining_explicit_tracks = explicit_grid_end_usize.saturating_sub(current_track_index);
                             let track_iter = repeat.tracks();
                             let track_iter = track_iter
                                 .cycle()
@@ -272,23 +272,8 @@ pub(super) fn initialize_grid_tracks<S: CheapCloneStr>(
                             });
                         }
                         RepetitionCount::AutoFit | RepetitionCount::AutoFill => {
-<<<<<<< HEAD
                             let auto_repeated_track_count =
                                 (counts.explicit - (track_template.len() as u16 - 1)) as usize;
-=======
-                            // Auto-repeat contributes the explicit tracks left after accounting for every
-                            // non-auto explicit track in the template, including fixed repeats and any tracks
-                            // that appear after the auto-repeat clause.
-                            // CSS Grid defines auto-repeat as part of the explicit grid and sizes it by
-                            // expanding the repeat-to-fill clause within the explicit track list, but the
-                            // used explicit grid still bounds the total number of explicit tracks we can
-                            // materialize here.
-                            // https://drafts.csswg.org/css-grid-2/#explicit-grids
-                            // https://drafts.csswg.org/css-grid-2/#auto-repeat
-                            let auto_repeated_track_count =
-                                counts.explicit.saturating_sub(non_auto_repeating_track_count) as usize;
-                            let remaining_explicit_tracks = explicit_grid_end_usize.saturating_sub(current_track_index);
->>>>>>> f578cc54 (Fix subgrid explicit track initialization bounds)
                             let iter = repeat.tracks().cycle();
                             for track_def in iter.take(auto_repeated_track_count.min(remaining_explicit_tracks)) {
                                 let mut track =
@@ -348,11 +333,7 @@ pub(super) fn initialize_grid_tracks<S: CheapCloneStr>(
         }
     }
 
-<<<<<<< HEAD
     let grid_area_tracks = (counts.negative_implicit + counts.explicit) - current_track_index as u16;
-=======
-    let grid_area_tracks = explicit_grid_end.saturating_sub(current_track_index as u16);
->>>>>>> f578cc54 (Fix subgrid explicit track initialization bounds)
 
     // Create positive implicit tracks
     if auto_track_count == 0 {
