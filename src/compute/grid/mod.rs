@@ -114,10 +114,18 @@ fn update_child_subgrid_contexts<Tree: LayoutGridContainer>(
 fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
     direction: Direction,
     content_box_inset: Rect<f32>,
+    resolved_margin: Rect<f32>,
     subgrid_context: Option<&SubgridContext<S>>,
     resolved_gap: Size<f32>,
     items: &mut [GridItem],
 ) {
+    // Project the parent-facing edge and gutter-delta space that Section 9 requires a
+    // subgrid to expose through its descendants during sizing. The projected space is
+    // stored as extra margin-like adjustment because the existing contribution code is
+    // already expressed in terms of outer sizes.
+    // Spec anchors:
+    // https://drafts.csswg.org/css-grid-2/#subgrid-item-contribution
+    // https://drafts.csswg.org/css-grid-2/#subgrid-margins
     fn apply_axis(
         axis: AbstractAxis,
         inherited_gutter_sizes: &[f32],
@@ -155,6 +163,30 @@ fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
         }
     }
 
+    fn apply_layout_margin_axis(
+        axis: AbstractAxis,
+        explicit_line_end: i16,
+        edge_margin: Line<f32>,
+        items: &mut [GridItem],
+    ) {
+        for item in items.iter_mut() {
+            let placement = item.placement(axis);
+            let start_adjustment = if placement.start.0 <= 0 { edge_margin.start } else { 0.0 };
+            let end_adjustment = if placement.end.0 >= explicit_line_end { edge_margin.end } else { 0.0 };
+
+            match axis {
+                AbstractAxis::Inline => {
+                    item.subgrid_layout_margin_adjustment.left += start_adjustment;
+                    item.subgrid_layout_margin_adjustment.right += end_adjustment;
+                }
+                AbstractAxis::Block => {
+                    item.subgrid_layout_margin_adjustment.top += start_adjustment;
+                    item.subgrid_layout_margin_adjustment.bottom += end_adjustment;
+                }
+            }
+        }
+    }
+
     if subgrid_context.and_then(|context| context.columns.as_ref()).is_some() {
         let inherited = subgrid_context.and_then(|context| context.columns.as_ref());
         let inherited_gutters = inherited.map(|context| context.gutter_sizes.as_slice()).unwrap_or(&[]);
@@ -168,6 +200,17 @@ fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
             inherited_gutters,
             resolved_gap.width,
             inline_edge_adjustment,
+            items,
+        );
+        let inline_margin_adjustment = if direction.is_rtl() {
+            Line { start: resolved_margin.right, end: resolved_margin.left }
+        } else {
+            Line { start: resolved_margin.left, end: resolved_margin.right }
+        };
+        apply_layout_margin_axis(
+            AbstractAxis::Inline,
+            inherited_gutters.len() as i16 + 1,
+            inline_margin_adjustment,
             items,
         );
     }
@@ -255,7 +298,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let resolved_margin = style.margin().map(|margin| {
         margin.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis))
     });
-    let subgrid_edge_adjustment = content_box_inset + resolved_margin;
+    let subgrid_edge_adjustment = content_box_inset;
 
     let align_content = style.align_content().unwrap_or(AlignContent::Stretch);
     let justify_content = style.justify_content().unwrap_or(JustifyContent::Stretch);
@@ -488,6 +531,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     apply_subgrid_item_margin_adjustments(
         direction,
         subgrid_edge_adjustment,
+        resolved_margin,
         subgrid_context.as_ref(),
         resolved_gap,
         &mut items,
@@ -682,8 +726,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         rerun_row_sizing = parent_height_indefinite && has_percentage_row;
 
         if !rerun_row_sizing {
+<<<<<<< HEAD
             intrinsic_row_contribution_changed =
                 items.iter_mut().filter(|item| item.crosses_intrinsic_column).any(|item| {
+=======
+            let min_content_contribution_changed =
+                items.iter_mut().filter(|item| item.crosses_intrinsic_row).any(|item| {
+>>>>>>> 871387df (Fix subgrid intrinsic contribution double-counting)
                     let available_space = item.available_space(
                         AbstractAxis::Block,
                         &columns,
@@ -829,7 +878,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             grid_area,
             container_alignment_styles,
             item.baseline_shim,
-            item.subgrid_margin_adjustment,
+            item.subgrid_layout_margin_adjustment,
             direction,
         );
         item.y_position = y_position;

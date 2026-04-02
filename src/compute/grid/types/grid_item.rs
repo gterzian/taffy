@@ -33,6 +33,8 @@ pub(in super::super) struct GridItem {
     pub is_compressible_replaced: bool,
     /// The item's overflow style
     pub overflow: Point<Overflow>,
+    /// The width reserved for classic scrollbars when overflow requires it.
+    pub scrollbar_width: f32,
     /// The item's box_sizing style
     pub box_sizing: BoxSizing,
     /// The item's size style
@@ -59,6 +61,8 @@ pub(in super::super) struct GridItem {
     pub column_axis_kind: GridAxisKind,
     /// Extra margin-like space inherited from ancestor subgrid edges and gutter differences.
     pub subgrid_margin_adjustment: Rect<f32>,
+    /// Ancestor margin projected into final positioning for subgridded axes.
+    pub subgrid_layout_margin_adjustment: Rect<f32>,
     /// The items first baseline (horizontal)
     pub baseline: Option<f32>,
     /// Shim for baseline alignment that acts like an extra top margin
@@ -129,6 +133,7 @@ impl GridItem {
             column: col_span,
             is_compressible_replaced: style.is_compressible_replaced(),
             overflow: style.overflow(),
+            scrollbar_width: style.scrollbar_width(),
             box_sizing: style.box_sizing(),
             size: style.size(),
             min_size: style.min_size(),
@@ -148,6 +153,7 @@ impl GridItem {
             row_axis_kind: style.subgrid_axis_kind(crate::geometry::AbsoluteAxis::Vertical),
             column_axis_kind: style.subgrid_axis_kind(crate::geometry::AbsoluteAxis::Horizontal),
             subgrid_margin_adjustment: Rect::ZERO,
+            subgrid_layout_margin_adjustment: Rect::ZERO,
             baseline: None,
             baseline_shim: 0.0,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
@@ -223,6 +229,10 @@ impl GridItem {
         }
     }
 
+    // Empty subgrids still need their own border/padding footprint to participate in
+    // sizing when no descendant reaches the corresponding edge placeholder.
+    // CSS Grid Level 2 requires edge placeholders for this case:
+    // https://drafts.csswg.org/css-grid-2/#subgrid-edge-placeholders
     fn empty_subgrid_padding_border_floor(
         &self,
         axis: AbstractAxis,
@@ -250,6 +260,40 @@ impl GridItem {
         match axis {
             AbstractAxis::Inline => padding.left + border.left + padding.right + border.right,
             AbstractAxis::Block => padding.top + border.top + padding.bottom + border.bottom,
+        }
+    }
+
+    // In a subgridded axis, the parent sizing pass already receives ancestor-projected
+    // border/padding/scrollbar-gutter space through descendant adjustments, so a non-empty
+    // subgrid must not contribute that same container edge space a second time through its
+    // own intrinsic measurement.
+    // Spec anchors:
+    // https://drafts.csswg.org/css-grid-2/#subgrid-item-contribution
+    // https://drafts.csswg.org/css-grid-2/#subgrid-margins
+    fn subgrid_self_duplicate_contribution(
+        &self,
+        axis: AbstractAxis,
+        tree: &impl LayoutPartialTree,
+        inner_node_size: Size<Option<f32>>,
+    ) -> f32 {
+        if !self.subgrids_axis(axis) || tree.child_count(self.node) == 0 {
+            return 0.0;
+        }
+
+        let padding = self.padding.resolve_or_zero(inner_node_size, |val, basis| tree.calc(val, basis));
+        let border = self.border.resolve_or_zero(inner_node_size, |val, basis| tree.calc(val, basis));
+        let scrollbar_gutter = match axis {
+            AbstractAxis::Inline => {
+                if self.overflow.y == Overflow::Scroll { self.scrollbar_width } else { 0.0 }
+            }
+            AbstractAxis::Block => {
+                if self.overflow.x == Overflow::Scroll { self.scrollbar_width } else { 0.0 }
+            }
+        };
+
+        match axis {
+            AbstractAxis::Inline => padding.left + padding.right + border.left + border.right + scrollbar_gutter,
+            AbstractAxis::Block => padding.top + padding.bottom + border.top + border.bottom + scrollbar_gutter,
         }
     }
 
@@ -483,6 +527,7 @@ impl GridItem {
         grid_area_size: Size<Option<f32>>,
         available_space: Size<Option<f32>>,
     ) -> f32 {
+<<<<<<< HEAD
         let known_dimensions = self.known_dimensions(tree, grid_area_size);
         // The child sees the grid area as its containing block during intrinsic measurement, so
         // percentage box properties resolve against the grid area when that size is definite.
@@ -490,6 +535,10 @@ impl GridItem {
         // https://www.w3.org/TR/css-grid-1/#grid-item-sizing
         // https://www.w3.org/TR/css-grid-1/#algo-overview
         tree.measure_child_size(
+=======
+        let known_dimensions = self.known_dimensions(tree, inner_node_size, available_space);
+        let contribution = tree.measure_child_size(
+>>>>>>> 871387df (Fix subgrid intrinsic contribution double-counting)
             self.node,
             known_dimensions,
             grid_area_size,
@@ -500,8 +549,9 @@ impl GridItem {
             SizingMode::InherentSize,
             axis.as_abs_naive(),
             Line::FALSE,
-        )
-        .max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size))
+        ) - self.subgrid_self_duplicate_contribution(axis, tree, inner_node_size);
+
+        contribution.max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size))
     }
 
     /// Retrieve the item's min content contribution from the cache or compute it using the provided parameters
@@ -528,11 +578,16 @@ impl GridItem {
         grid_area_size: Size<Option<f32>>,
         available_space: Size<Option<f32>>,
     ) -> f32 {
+<<<<<<< HEAD
         let known_dimensions = self.known_dimensions(tree, grid_area_size);
         // See the min-content path above. Max-content measurement uses the same containing-block
         // basis so percentage-dependent item geometry is measured from the grid area rather than
         // from the container.
         tree.measure_child_size(
+=======
+        let known_dimensions = self.known_dimensions(tree, inner_node_size, available_space);
+        let contribution = tree.measure_child_size(
+>>>>>>> 871387df (Fix subgrid intrinsic contribution double-counting)
             self.node,
             known_dimensions,
             grid_area_size,
@@ -543,8 +598,9 @@ impl GridItem {
             SizingMode::InherentSize,
             axis.as_abs_naive(),
             Line::FALSE,
-        )
-        .max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size))
+        ) - self.subgrid_self_duplicate_contribution(axis, tree, inner_node_size);
+
+        contribution.max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size))
     }
 
     /// Retrieve the item's max content contribution from the cache or compute it using the provided parameters
@@ -661,10 +717,13 @@ impl GridItem {
         // In all cases, the size suggestion is additionally clamped by the maximum size in the affected axis, if it’s definite.
         // Note: The argument to fit-content() does not clamp the content-based minimum size in the same way as a fixed max track
         // sizing function.
+        let duplicate_self_contribution = self.subgrid_self_duplicate_contribution(axis, tree, inner_node_size);
         let limit = self.spanned_fixed_track_limit(axis, axis_tracks, inner_node_size.get(axis), &|val, basis| {
             tree.resolve_calc_value(val, basis)
         });
-        size.max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size)).maybe_min(limit)
+        (size - duplicate_self_contribution)
+            .max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size))
+            .maybe_min(limit)
     }
 
     /// Retrieve the item's minimum contribution from the cache or compute it using the provided parameters
