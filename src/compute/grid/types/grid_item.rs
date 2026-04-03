@@ -368,8 +368,10 @@ impl GridItem {
         axis_tracks[self.track_range_excluding_lines(axis)]
             .iter()
             .map(|track| {
-                let min_size = track.min_track_sizing_function.definite_value(axis_parent_size, resolve_calc_value)?;
-                let max_size = track.max_track_sizing_function.definite_value(axis_parent_size, resolve_calc_value)?;
+                let min_size =
+                    track.min_track_sizing_function.definite_value(axis_parent_size, resolve_calc_value)?;
+                let max_size =
+                    track.max_track_sizing_function.definite_value(axis_parent_size, resolve_calc_value)?;
 
                 if min_size.total_cmp(&max_size).is_eq() {
                     Some(track.base_size)
@@ -397,10 +399,12 @@ impl GridItem {
         // Spec:
         // https://www.w3.org/TR/css-grid-1/#item-margins
         // https://www.w3.org/TR/CSS22/box.html#padding-properties
-        let padding =
-            Self::resolved_axis_side_lengths(self.padding, grid_area_size.width, |val, basis| tree.calc(val, basis));
-        let border =
-            Self::resolved_axis_side_lengths(self.border, grid_area_size.width, |val, basis| tree.calc(val, basis));
+        let padding = Self::resolved_axis_side_lengths(self.padding, grid_area_size.width, |val, basis| {
+            tree.calc(val, basis)
+        });
+        let border = Self::resolved_axis_side_lengths(self.border, grid_area_size.width, |val, basis| {
+            tree.calc(val, basis)
+        });
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
@@ -526,19 +530,15 @@ impl GridItem {
         tree: &mut impl LayoutPartialTree,
         grid_area_size: Size<Option<f32>>,
         available_space: Size<Option<f32>>,
+        inner_node_size: Size<Option<f32>>,
     ) -> f32 {
-<<<<<<< HEAD
         let known_dimensions = self.known_dimensions(tree, grid_area_size);
         // The child sees the grid area as its containing block during intrinsic measurement, so
         // percentage box properties resolve against the grid area when that size is definite.
         // Spec:
         // https://www.w3.org/TR/css-grid-1/#grid-item-sizing
         // https://www.w3.org/TR/css-grid-1/#algo-overview
-        tree.measure_child_size(
-=======
-        let known_dimensions = self.known_dimensions(tree, inner_node_size, available_space);
         let contribution = tree.measure_child_size(
->>>>>>> 871387df (Fix subgrid intrinsic contribution double-counting)
             self.node,
             known_dimensions,
             grid_area_size,
@@ -562,9 +562,10 @@ impl GridItem {
         tree: &mut impl LayoutPartialTree,
         grid_area_size: Size<Option<f32>>,
         available_space: Size<Option<f32>>,
+        inner_node_size: Size<Option<f32>>,
     ) -> f32 {
         self.min_content_contribution_cache.get(axis).unwrap_or_else(|| {
-            let size = self.min_content_contribution(axis, tree, grid_area_size, available_space);
+            let size = self.min_content_contribution(axis, tree, grid_area_size, available_space, inner_node_size);
             self.min_content_contribution_cache.set(axis, Some(size));
             size
         })
@@ -577,17 +578,13 @@ impl GridItem {
         tree: &mut impl LayoutPartialTree,
         grid_area_size: Size<Option<f32>>,
         available_space: Size<Option<f32>>,
+        inner_node_size: Size<Option<f32>>,
     ) -> f32 {
-<<<<<<< HEAD
         let known_dimensions = self.known_dimensions(tree, grid_area_size);
         // See the min-content path above. Max-content measurement uses the same containing-block
         // basis so percentage-dependent item geometry is measured from the grid area rather than
         // from the container.
-        tree.measure_child_size(
-=======
-        let known_dimensions = self.known_dimensions(tree, inner_node_size, available_space);
         let contribution = tree.measure_child_size(
->>>>>>> 871387df (Fix subgrid intrinsic contribution double-counting)
             self.node,
             known_dimensions,
             grid_area_size,
@@ -611,9 +608,10 @@ impl GridItem {
         tree: &mut impl LayoutPartialTree,
         grid_area_size: Size<Option<f32>>,
         available_space: Size<Option<f32>>,
+        inner_node_size: Size<Option<f32>>,
     ) -> f32 {
         self.max_content_contribution_cache.get(axis).unwrap_or_else(|| {
-            let size = self.max_content_contribution(axis, tree, grid_area_size, available_space);
+            let size = self.max_content_contribution(axis, tree, grid_area_size, available_space, inner_node_size);
             self.max_content_contribution_cache.set(axis, Some(size));
             size
         })
@@ -635,10 +633,12 @@ impl GridItem {
         grid_area_size: Size<Option<f32>>,
         inner_node_size: Size<Option<f32>>,
     ) -> f32 {
-        let padding =
-            Self::resolved_axis_side_lengths(self.padding, grid_area_size.width, |val, basis| tree.calc(val, basis));
-        let border =
-            Self::resolved_axis_side_lengths(self.border, grid_area_size.width, |val, basis| tree.calc(val, basis));
+        let padding = Self::resolved_axis_side_lengths(self.padding, grid_area_size.width, |val, basis| {
+            tree.calc(val, basis)
+        });
+        let border = Self::resolved_axis_side_lengths(self.border, grid_area_size.width, |val, basis| {
+            tree.calc(val, basis)
+        });
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
@@ -696,7 +696,7 @@ impl GridItem {
                 // Otherwise, the automatic minimum size is zero, as usual.
                 if use_content_based_minimum {
                     let mut minimum_contribution =
-                        self.min_content_contribution_cached(axis, tree, grid_area_size, grid_area_size);
+                        self.min_content_contribution_cached(axis, tree, grid_area_size, grid_area_size, inner_node_size);
 
                     // If the item is a compressible replaced element, and has a definite preferred size or maximum size in the
                     // relevant axis, the size suggestion is capped by those sizes; for this purpose, any indefinite percentages

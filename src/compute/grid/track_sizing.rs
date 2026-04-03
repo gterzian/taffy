@@ -120,17 +120,13 @@ where
     /// Compute the item's resolved margins for size contributions. Horizontal percentage margins always resolve
     /// to zero if the container size is indefinite as otherwise this would introduce a cyclic dependency.
     #[inline(always)]
-    fn margins_axis_sums_with_baseline_shims(&self, item: &mut GridItem, axis_tracks: &[GridTrack]) -> Size<f32> {
-        let percentage_basis = if self.axis == AbstractAxis::Block {
-            self.available_space(item).width
-        } else {
-            item.definite_grid_area_size_in_axis(
-                AbstractAxis::Inline,
-                axis_tracks,
-                self.inner_node_size.width,
-                &|val, basis| self.tree.calc(val, basis),
-            )
-        };
+    fn margins_axis_sums_with_baseline_shims(&self, item: &GridItem, axis_tracks: &[GridTrack]) -> Size<f32> {
+        let percentage_basis = item.definite_grid_area_size_in_axis(
+            AbstractAxis::Inline,
+            if self.axis == AbstractAxis::Inline { axis_tracks } else { self.other_axis_tracks },
+            self.inner_node_size.width,
+            &|val, basis| self.tree.calc(val, basis),
+        );
         item.margins_axis_sums_with_baseline_shims(percentage_basis, self.tree)
     }
 
@@ -146,7 +142,13 @@ where
         let grid_area_size = self.grid_area_size(item, axis_tracks);
         let available_space = self.available_space(item);
         let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, axis_tracks);
-        let contribution = item.min_content_contribution_cached(self.axis, self.tree, grid_area_size, available_space);
+        let contribution = item.min_content_contribution_cached(
+            self.axis,
+            self.tree,
+            grid_area_size,
+            available_space,
+            self.inner_node_size,
+        );
         contribution + margin_axis_sums.get(self.axis)
     }
 
@@ -156,7 +158,13 @@ where
         let grid_area_size = self.grid_area_size(item, axis_tracks);
         let available_space = self.available_space(item);
         let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, axis_tracks);
-        let contribution = item.max_content_contribution_cached(self.axis, self.tree, grid_area_size, available_space);
+        let contribution = item.max_content_contribution_cached(
+            self.axis,
+            self.tree,
+            grid_area_size,
+            available_space,
+            self.inner_node_size,
+        );
         contribution + margin_axis_sums.get(self.axis)
     }
 
@@ -583,8 +591,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
 
     let axis_inner_node_size = inner_node_size.get(axis);
     let flex_factor_sum = axis_tracks.iter().map(|track| track.flex_factor()).sum::<f32>();
-    let mut item_sizer =
-        IntrinsicSizeMeasurer { tree, other_axis_tracks, axis, inner_node_size, get_track_size_estimate };
+    let mut item_sizer = IntrinsicSizeMeasurer { tree, other_axis_tracks, axis, inner_node_size, get_track_size_estimate };
 
     let mut batched_item_iterator = ItemBatcher::new(axis);
     while let Some((batch, is_flex)) = batched_item_iterator.next(items) {
@@ -1256,8 +1263,13 @@ fn expand_flexible_tracks(
                     .map(|item| {
                         let tracks = &axis_tracks[item.track_range_excluding_lines(axis)];
                         // TODO: plumb estimate of other axis size (known_dimensions) in here rather than just passing Size::NONE?
-                        let max_content_contribution =
-                            item.max_content_contribution_cached(axis, tree, Size::NONE, Size::NONE);
+                        let max_content_contribution = item.max_content_contribution_cached(
+                            axis,
+                            tree,
+                            Size::NONE,
+                            Size::NONE,
+                            Size::NONE,
+                        );
                         find_size_of_fr(tracks, max_content_contribution)
                     })
                     .max_by(|a, b| a.total_cmp(b))

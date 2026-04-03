@@ -672,8 +672,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                     ),
                     height: available_space.height,
                 };
-                let new_min_content_contribution =
-                    item.min_content_contribution(AbstractAxis::Inline, tree, grid_area_size, available_space);
+                let new_min_content_contribution = item.min_content_contribution(
+                    AbstractAxis::Inline,
+                    tree,
+                    grid_area_size,
+                    available_space,
+                    inner_node_size,
+                );
 
                 let has_changed = Some(new_min_content_contribution) != item.min_content_contribution_cache.width;
 
@@ -726,13 +731,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         rerun_row_sizing = parent_height_indefinite && has_percentage_row;
 
         if !rerun_row_sizing {
-<<<<<<< HEAD
             intrinsic_row_contribution_changed =
-                items.iter_mut().filter(|item| item.crosses_intrinsic_column).any(|item| {
-=======
-            let min_content_contribution_changed =
                 items.iter_mut().filter(|item| item.crosses_intrinsic_row).any(|item| {
->>>>>>> 871387df (Fix subgrid intrinsic contribution double-counting)
                     let available_space = item.available_space(
                         AbstractAxis::Block,
                         &columns,
@@ -748,8 +748,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                             &|val, basis| tree.calc(val, basis),
                         ),
                     };
-                    let new_min_content_contribution =
-                        item.min_content_contribution(AbstractAxis::Block, tree, grid_area_size, available_space);
+                    let new_min_content_contribution = item.min_content_contribution(
+                        AbstractAxis::Block,
+                        tree,
+                        grid_area_size,
+                        available_space,
+                        inner_node_size,
+                    );
 
                     let has_changed = Some(new_min_content_contribution) != item.min_content_contribution_cache.height;
 
