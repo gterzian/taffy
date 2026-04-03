@@ -111,6 +111,107 @@ fn update_child_subgrid_contexts<Tree: LayoutGridContainer>(
     }
 }
 
+fn update_non_empty_subgrid_missing_edge_placeholders<Tree: LayoutGridContainer>(
+    tree: &mut Tree,
+    items: &mut [GridItem],
+) {
+    fn child_contributes_edge_in_axis<Tree: LayoutGridContainer>(tree: &Tree, child: &GridItem, axis: AbstractAxis) -> bool {
+        !(child.subgrids_axis(axis) && tree.child_count(child.node) == 0)
+    }
+
+    for item in items.iter_mut().filter(|item| item.row_axis_kind == GridAxisKind::Subgrid || item.column_axis_kind == GridAxisKind::Subgrid) {
+        if tree.child_count(item.node) == 0 {
+            continue;
+        }
+
+        let style = tree.get_grid_container_style(item.node);
+        let subgrid_context = tree.get_grid_container_subgrid_context(item.node).cloned();
+        let direction = style.direction();
+
+        let child_styles_iter = || tree.child_ids(item.node).map(|child_node: NodeId| tree.get_grid_child_style(child_node));
+        let (col_auto_repetition_count, grid_template_col_count) = compute_explicit_grid_size_in_axis(
+            &style,
+            None,
+            AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
+            |val, basis| tree.calc(val, basis),
+            subgrid_context.as_ref().and_then(|context| context.columns.as_ref()),
+            AbsoluteAxis::Horizontal,
+        );
+        let (row_auto_repetition_count, grid_template_row_count) = compute_explicit_grid_size_in_axis(
+            &style,
+            None,
+            AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
+            |val, basis| tree.calc(val, basis),
+            subgrid_context.as_ref().and_then(|context| context.rows.as_ref()),
+            AbsoluteAxis::Vertical,
+        );
+
+        let mut name_resolver =
+            NamedLineResolver::new(&style, col_auto_repetition_count, row_auto_repetition_count, subgrid_context.as_ref());
+
+        let explicit_col_count = subgrid_context
+            .as_ref()
+            .and_then(|context| context.columns.as_ref())
+            .map(|context| context.track_count)
+            .unwrap_or_else(|| grid_template_col_count.max(name_resolver.area_column_count()));
+        let explicit_row_count = subgrid_context
+            .as_ref()
+            .and_then(|context| context.rows.as_ref())
+            .map(|context| context.track_count)
+            .unwrap_or_else(|| grid_template_row_count.max(name_resolver.area_row_count()));
+
+        name_resolver.set_explicit_column_count(explicit_col_count);
+        name_resolver.set_explicit_row_count(explicit_row_count);
+
+        let (est_col_counts, est_row_counts) =
+            compute_grid_size_estimate(explicit_col_count, explicit_row_count, direction, child_styles_iter());
+        let mut child_items = Vec::with_capacity(tree.child_count(item.node));
+        let mut cell_occupancy_matrix = CellOccupancyMatrix::with_track_counts(est_col_counts, est_row_counts);
+        let in_flow_children_iter = || {
+            tree.child_ids(item.node)
+                .enumerate()
+                .map(|(index, child_node)| (index, child_node, tree.get_grid_child_style(child_node)))
+                .filter(|(_, _, style)| {
+                    style.box_generation_mode() != BoxGenerationMode::None && style.position() != Position::Absolute
+                })
+        };
+        place_grid_items(
+            &mut cell_occupancy_matrix,
+            &mut child_items,
+            in_flow_children_iter,
+            direction,
+            style.grid_auto_flow(),
+            style.align_items().unwrap_or(AlignItems::Stretch),
+            style.justify_items().unwrap_or(AlignItems::Stretch),
+            &name_resolver,
+        );
+
+        if item.column_axis_kind == GridAxisKind::Subgrid && !child_items.is_empty() {
+            item.subgrid_missing_edge_placeholders.left =
+                !child_items
+                    .iter()
+                    .any(|child| child.column.start.0 <= 0 && child_contributes_edge_in_axis(tree, child, AbstractAxis::Inline));
+            item.subgrid_missing_edge_placeholders.right =
+                !child_items.iter().any(|child| {
+                    child.column.end.0 >= explicit_col_count as i16
+                        && child_contributes_edge_in_axis(tree, child, AbstractAxis::Inline)
+                });
+        }
+
+        if item.row_axis_kind == GridAxisKind::Subgrid && !child_items.is_empty() {
+            item.subgrid_missing_edge_placeholders.top =
+                !child_items
+                    .iter()
+                    .any(|child| child.row.start.0 <= 0 && child_contributes_edge_in_axis(tree, child, AbstractAxis::Block));
+            item.subgrid_missing_edge_placeholders.bottom =
+                !child_items.iter().any(|child| {
+                    child.row.end.0 >= explicit_row_count as i16
+                        && child_contributes_edge_in_axis(tree, child, AbstractAxis::Block)
+                });
+        }
+    }
+}
+
 fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
     direction: Direction,
     content_box_inset: Rect<f32>,
@@ -195,6 +296,11 @@ fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
         } else {
             Line { start: content_box_inset.left, end: content_box_inset.right }
         };
+        let inline_margin_adjustment = if direction.is_rtl() {
+            Line { start: resolved_margin.right, end: resolved_margin.left }
+        } else {
+            Line { start: resolved_margin.left, end: resolved_margin.right }
+        };
         apply_axis(
             AbstractAxis::Inline,
             inherited_gutters,
@@ -202,11 +308,6 @@ fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
             inline_edge_adjustment,
             items,
         );
-        let inline_margin_adjustment = if direction.is_rtl() {
-            Line { start: resolved_margin.right, end: resolved_margin.left }
-        } else {
-            Line { start: resolved_margin.left, end: resolved_margin.right }
-        };
         apply_layout_margin_axis(
             AbstractAxis::Inline,
             inherited_gutters.len() as i16 + 1,
@@ -528,6 +629,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // each axis, and doing it up-front here means we don't have to keep repeating that calculation
     resolve_item_track_indexes(&mut items, final_col_counts, final_row_counts);
     update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items, false, false);
+    update_non_empty_subgrid_missing_edge_placeholders(tree, &mut items);
     apply_subgrid_item_margin_adjustments(
         direction,
         subgrid_edge_adjustment,

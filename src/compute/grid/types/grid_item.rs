@@ -63,6 +63,8 @@ pub(in super::super) struct GridItem {
     pub subgrid_margin_adjustment: Rect<f32>,
     /// Ancestor margin projected into final positioning for subgridded axes.
     pub subgrid_layout_margin_adjustment: Rect<f32>,
+    /// Edges of a non-empty subgrid that need placeholder inflation because no child reaches them.
+    pub subgrid_missing_edge_placeholders: Rect<bool>,
     /// The items first baseline (horizontal)
     pub baseline: Option<f32>,
     /// Shim for baseline alignment that acts like an extra top margin
@@ -154,6 +156,7 @@ impl GridItem {
             column_axis_kind: style.subgrid_axis_kind(crate::geometry::AbsoluteAxis::Horizontal),
             subgrid_margin_adjustment: Rect::ZERO,
             subgrid_layout_margin_adjustment: Rect::ZERO,
+            subgrid_missing_edge_placeholders: Rect { left: false, right: false, top: false, bottom: false },
             baseline: None,
             baseline_shim: 0.0,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
@@ -266,7 +269,7 @@ impl GridItem {
     // In a subgridded axis, the parent sizing pass already receives ancestor-projected
     // border/padding/scrollbar-gutter space through descendant adjustments, so a non-empty
     // subgrid must not contribute that same container edge space a second time through its
-    // own intrinsic measurement.
+    // own intrinsic measurement, but only for edges that a qualifying descendant actually reaches.
     // Spec anchors:
     // https://drafts.csswg.org/css-grid-2/#subgrid-item-contribution
     // https://drafts.csswg.org/css-grid-2/#subgrid-margins
@@ -292,8 +295,36 @@ impl GridItem {
         };
 
         match axis {
-            AbstractAxis::Inline => padding.left + padding.right + border.left + border.right + scrollbar_gutter,
-            AbstractAxis::Block => padding.top + padding.bottom + border.top + border.bottom + scrollbar_gutter,
+            AbstractAxis::Inline => {
+                (if self.subgrid_missing_edge_placeholders.left {
+                    0.0
+                } else {
+                    padding.left + border.left
+                }) + (if self.subgrid_missing_edge_placeholders.right {
+                    0.0
+                } else {
+                    padding.right + border.right
+                }) + if self.subgrid_missing_edge_placeholders.left || self.subgrid_missing_edge_placeholders.right {
+                        0.0
+                    } else {
+                        scrollbar_gutter
+                    }
+            }
+            AbstractAxis::Block => {
+                (if self.subgrid_missing_edge_placeholders.top {
+                    0.0
+                } else {
+                    padding.top + border.top
+                }) + (if self.subgrid_missing_edge_placeholders.bottom {
+                    0.0
+                } else {
+                    padding.bottom + border.bottom
+                }) + if self.subgrid_missing_edge_placeholders.top || self.subgrid_missing_edge_placeholders.bottom {
+                        0.0
+                    } else {
+                        scrollbar_gutter
+                    }
+            }
         }
     }
 
