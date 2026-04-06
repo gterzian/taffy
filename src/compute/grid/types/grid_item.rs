@@ -465,7 +465,12 @@ impl GridItem {
             //  - The node is not absolutely positioned
             //  - The node does not have auto margins in this axis.
             if !self.margin.left.is_auto() && !self.margin.right.is_auto() && self.justify_self == AlignSelf::Stretch {
-                return grid_area_minus_item_margins_size.width;
+                let stretched_width = grid_area_minus_item_margins_size.width;
+                if self.subgrids_axis(AbstractAxis::Inline) && stretched_width == Some(0.0) {
+                    return None;
+                }
+
+                return stretched_width;
             }
 
             None
@@ -480,7 +485,12 @@ impl GridItem {
             //  - The node is not absolutely positioned
             //  - The node does not have auto margins in this axis.
             if !self.margin.top.is_auto() && !self.margin.bottom.is_auto() && self.align_self == AlignSelf::Stretch {
-                return grid_area_minus_item_margins_size.height;
+                let stretched_height = grid_area_minus_item_margins_size.height;
+                if self.subgrids_axis(AbstractAxis::Block) && stretched_height == Some(0.0) {
+                    return None;
+                }
+
+                return stretched_height;
             }
 
             None

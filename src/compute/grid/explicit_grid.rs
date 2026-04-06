@@ -769,7 +769,7 @@ mod test {
 
         // Call function
         let mut tracks = Vec::new();
-        initialize_grid_tracks(&mut tracks, track_counts, &grid_style, AbsoluteAxis::Horizontal, |_| false);
+        initialize_grid_tracks(&mut tracks, track_counts, &grid_style, None, AbsoluteAxis::Horizontal, |_| false);
 
         // Assertions
         let expected = vec![

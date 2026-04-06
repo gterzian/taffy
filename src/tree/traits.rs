@@ -258,7 +258,7 @@ pub trait LayoutFlexboxContainer: LayoutPartialTree {
 
 #[cfg(feature = "grid")]
 /// Parent-derived information that a subgrid axis needs while laying itself out.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SubgridAxisContext<S: CheapCloneStr> {
     /// The used track count covered by the subgrid item in the parent axis.
     pub track_count: u16,
@@ -268,6 +268,26 @@ pub struct SubgridAxisContext<S: CheapCloneStr> {
     pub track_sizes: Vec<f32>,
     /// Parent used gutter sizes between the covered tracks, when available.
     pub gutter_sizes: Vec<f32>,
+    /// Ancestor-projected sizing adjustment that nested descendants must inherit at the
+    /// corresponding start and end edges of this subgridded axis.
+    pub inherited_sizing_adjustment: Line<f32>,
+    /// Ancestor-projected margin adjustment that nested descendants must inherit during
+    /// final placement in this subgridded axis.
+    pub inherited_layout_margin_adjustment: Line<f32>,
+}
+
+#[cfg(feature = "grid")]
+impl<S: CheapCloneStr> Default for SubgridAxisContext<S> {
+    fn default() -> Self {
+        Self {
+            track_count: 0,
+            line_names: Vec::new(),
+            track_sizes: Vec::new(),
+            gutter_sizes: Vec::new(),
+            inherited_sizing_adjustment: Line { start: 0.0, end: 0.0 },
+            inherited_layout_margin_adjustment: Line { start: 0.0, end: 0.0 },
+        }
+    }
 }
 
 #[cfg(feature = "grid")]

@@ -54,6 +54,7 @@ fn track_sizes_for_item_span(tracks: &[GridTrack], placement_indexes: Line<u16>)
 fn update_child_subgrid_contexts<Tree: LayoutGridContainer>(
     tree: &mut Tree,
     name_resolver: &NamedLineResolver<Tree::CustomIdent>,
+    direction: Direction,
     columns: &[GridTrack],
     rows: &[GridTrack],
     items: &[GridItem],
@@ -82,6 +83,28 @@ fn update_child_subgrid_contexts<Tree: LayoutGridContainer>(
                 } else {
                     Vec::new()
                 },
+                inherited_sizing_adjustment: if direction.is_rtl() {
+                    Line {
+                        start: item.subgrid_margin_adjustment.right,
+                        end: item.subgrid_margin_adjustment.left,
+                    }
+                } else {
+                    Line {
+                        start: item.subgrid_margin_adjustment.left,
+                        end: item.subgrid_margin_adjustment.right,
+                    }
+                },
+                inherited_layout_margin_adjustment: if direction.is_rtl() {
+                    Line {
+                        start: item.subgrid_layout_margin_adjustment.right,
+                        end: item.subgrid_layout_margin_adjustment.left,
+                    }
+                } else {
+                    Line {
+                        start: item.subgrid_layout_margin_adjustment.left,
+                        end: item.subgrid_layout_margin_adjustment.right,
+                    }
+                },
             });
         }
 
@@ -98,6 +121,14 @@ fn update_child_subgrid_contexts<Tree: LayoutGridContainer>(
                     track_sizes_for_item_span(rows, item.row_indexes).1
                 } else {
                     Vec::new()
+                },
+                inherited_sizing_adjustment: Line {
+                    start: item.subgrid_margin_adjustment.top,
+                    end: item.subgrid_margin_adjustment.bottom,
+                },
+                inherited_layout_margin_adjustment: Line {
+                    start: item.subgrid_layout_margin_adjustment.top,
+                    end: item.subgrid_layout_margin_adjustment.bottom,
                 },
             });
         }
@@ -291,21 +322,39 @@ fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
     if subgrid_context.and_then(|context| context.columns.as_ref()).is_some() {
         let inherited = subgrid_context.and_then(|context| context.columns.as_ref());
         let inherited_gutters = inherited.map(|context| context.gutter_sizes.as_slice()).unwrap_or(&[]);
-        let inline_edge_adjustment = if direction.is_rtl() {
-            Line { start: content_box_inset.right, end: content_box_inset.left }
+        let inherited_sizing_adjustment = inherited
+            .map(|context| context.inherited_sizing_adjustment)
+            .unwrap_or(Line { start: 0.0, end: 0.0 });
+        let inherited_layout_margin_adjustment = inherited
+            .map(|context| context.inherited_layout_margin_adjustment)
+            .unwrap_or(Line { start: 0.0, end: 0.0 });
+        let inline_sizing_adjustment = if direction.is_rtl() {
+            Line {
+                start: inherited_sizing_adjustment.start + content_box_inset.right + resolved_margin.right,
+                end: inherited_sizing_adjustment.end + content_box_inset.left + resolved_margin.left,
+            }
         } else {
-            Line { start: content_box_inset.left, end: content_box_inset.right }
+            Line {
+                start: inherited_sizing_adjustment.start + content_box_inset.left + resolved_margin.left,
+                end: inherited_sizing_adjustment.end + content_box_inset.right + resolved_margin.right,
+            }
         };
         let inline_margin_adjustment = if direction.is_rtl() {
-            Line { start: resolved_margin.right, end: resolved_margin.left }
+            Line {
+                start: inherited_layout_margin_adjustment.start + resolved_margin.right,
+                end: inherited_layout_margin_adjustment.end + resolved_margin.left,
+            }
         } else {
-            Line { start: resolved_margin.left, end: resolved_margin.right }
+            Line {
+                start: inherited_layout_margin_adjustment.start + resolved_margin.left,
+                end: inherited_layout_margin_adjustment.end + resolved_margin.right,
+            }
         };
         apply_axis(
             AbstractAxis::Inline,
             inherited_gutters,
             resolved_gap.width,
-            inline_edge_adjustment,
+            inline_sizing_adjustment,
             items,
         );
         apply_layout_margin_axis(
@@ -319,11 +368,17 @@ fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
     if subgrid_context.and_then(|context| context.rows.as_ref()).is_some() {
         let inherited = subgrid_context.and_then(|context| context.rows.as_ref());
         let inherited_gutters = inherited.map(|context| context.gutter_sizes.as_slice()).unwrap_or(&[]);
+        let inherited_sizing_adjustment = inherited
+            .map(|context| context.inherited_sizing_adjustment)
+            .unwrap_or(Line { start: 0.0, end: 0.0 });
         apply_axis(
             AbstractAxis::Block,
             inherited_gutters,
             resolved_gap.height,
-            Line { start: content_box_inset.top, end: content_box_inset.bottom },
+            Line {
+                start: inherited_sizing_adjustment.start + content_box_inset.top,
+                end: inherited_sizing_adjustment.end + content_box_inset.bottom,
+            },
             items,
         );
     }
@@ -551,6 +606,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 line_names: name_resolver.line_names_for_span(GridAreaAxis::Column, item.column),
                 track_sizes: Vec::new(),
                 gutter_sizes: Vec::new(),
+                inherited_sizing_adjustment: Line { start: 0.0, end: 0.0 },
+                inherited_layout_margin_adjustment: Line { start: 0.0, end: 0.0 },
             });
         }
 
@@ -560,6 +617,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 line_names: name_resolver.line_names_for_span(GridAreaAxis::Row, item.row),
                 track_sizes: Vec::new(),
                 gutter_sizes: Vec::new(),
+                inherited_sizing_adjustment: Line { start: 0.0, end: 0.0 },
+                inherited_layout_margin_adjustment: Line { start: 0.0, end: 0.0 },
             });
         }
 
@@ -628,8 +687,6 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // This computation is relatively trivial, but it requires the final number of negative (implicit) tracks in
     // each axis, and doing it up-front here means we don't have to keep repeating that calculation
     resolve_item_track_indexes(&mut items, final_col_counts, final_row_counts);
-    update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items, false, false);
-    update_non_empty_subgrid_missing_edge_placeholders(tree, &mut items);
     apply_subgrid_item_margin_adjustments(
         direction,
         subgrid_edge_adjustment,
@@ -638,6 +695,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         resolved_gap,
         &mut items,
     );
+    update_child_subgrid_contexts(tree, &name_resolver, direction, &columns, &rows, &items, false, false);
+    update_non_empty_subgrid_missing_edge_placeholders(tree, &mut items);
     // For each item, and in each axis, determine whether the item crosses any flexible (fr) tracks
     // Record this as a boolean (per-axis) on each item for later use in the track-sizing algorithm
     determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut items, &columns, &rows);
@@ -665,7 +724,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     );
     let initial_column_sum = columns.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.width = inner_node_size.width.or_else(|| initial_column_sum.into());
-    update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items, true, false);
+    update_child_subgrid_contexts(tree, &name_resolver, direction, &columns, &rows, &items, true, false);
 
     items.iter_mut().for_each(|item| item.available_space_cache = None);
 
@@ -687,7 +746,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     );
     let initial_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.height = inner_node_size.height.or_else(|| initial_row_sum.into());
-    update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items, true, true);
+    update_child_subgrid_contexts(tree, &name_resolver, direction, &columns, &rows, &items, true, true);
 
     debug_log!("initial_column_sum", dbg:initial_column_sum);
     debug_log!(dbg: columns.iter().map(|track| track.base_size).collect::<Vec<_>>());
@@ -821,7 +880,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             |track: &GridTrack, _, _| Some(track.base_size),
             has_baseline_aligned_item,
         );
-        update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items, true, false);
+        update_child_subgrid_contexts(tree, &name_resolver, direction, &columns, &rows, &items, true, false);
 
         // Row sizing must be re-run (once) if:
         //   - The grid container's height was initially indefinite and there are any rows with percentage track sizing functions
@@ -895,7 +954,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 |track: &GridTrack, _, _| Some(track.base_size),
                 false, // TODO: Support baseline alignment in the vertical axis
             );
-            update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items, true, true);
+            update_child_subgrid_contexts(tree, &name_resolver, direction, &columns, &rows, &items, true, true);
         }
     }
 
@@ -957,7 +1016,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         false,
     );
 
-    update_child_subgrid_contexts(tree, &name_resolver, &columns, &rows, &items, true, true);
+    update_child_subgrid_contexts(tree, &name_resolver, direction, &columns, &rows, &items, true, true);
 
     // 9. Size, Align, and Position Grid Items
 
@@ -985,7 +1044,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             grid_area,
             container_alignment_styles,
             item.baseline_shim,
-            item.subgrid_layout_margin_adjustment,
+            item.subgrid_margin_adjustment,
             direction,
         );
         item.y_position = y_position;

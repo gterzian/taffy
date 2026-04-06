@@ -152,32 +152,32 @@ pub(super) fn align_and_position_item(
 
     // Note: This is not a bug. It is part of the CSS spec that both horizontal and vertical margins
     // resolve against the WIDTH of the grid area.
-    let margin = style.margin().map(|margin| {
+    let authored_margin = style.margin().map(|margin| {
         margin.resolve_to_option(grid_area_size.width, |val, basis| tree.calc(val, basis))
     });
-    let margin = Rect {
-        left: margin.left.map(|value| value + subgrid_margin_adjustment.left).or_else(|| {
+    let margin_for_size = Rect {
+        left: authored_margin.left.map(|value| value + subgrid_margin_adjustment.left).or_else(|| {
             if subgrid_margin_adjustment.left != 0.0 {
                 Some(subgrid_margin_adjustment.left)
             } else {
                 None
             }
         }),
-        right: margin.right.map(|value| value + subgrid_margin_adjustment.right).or_else(|| {
+        right: authored_margin.right.map(|value| value + subgrid_margin_adjustment.right).or_else(|| {
             if subgrid_margin_adjustment.right != 0.0 {
                 Some(subgrid_margin_adjustment.right)
             } else {
                 None
             }
         }),
-        top: margin.top.map(|value| value + subgrid_margin_adjustment.top).or_else(|| {
+        top: authored_margin.top.map(|value| value + subgrid_margin_adjustment.top).or_else(|| {
             if subgrid_margin_adjustment.top != 0.0 {
                 Some(subgrid_margin_adjustment.top)
             } else {
                 None
             }
         }),
-        bottom: margin.bottom.map(|value| value + subgrid_margin_adjustment.bottom).or_else(|| {
+        bottom: authored_margin.bottom.map(|value| value + subgrid_margin_adjustment.bottom).or_else(|| {
             if subgrid_margin_adjustment.bottom != 0.0 {
                 Some(subgrid_margin_adjustment.bottom)
             } else {
@@ -187,8 +187,8 @@ pub(super) fn align_and_position_item(
     };
 
     let grid_area_minus_item_margins_size = Size {
-        width: grid_area_size.width.maybe_sub(margin.left).maybe_sub(margin.right),
-        height: grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - baseline_shim,
+        width: grid_area_size.width.maybe_sub(margin_for_size.left).maybe_sub(margin_for_size.right),
+        height: grid_area_size.height.maybe_sub(margin_for_size.top).maybe_sub(margin_for_size.bottom) - baseline_shim,
     };
 
     // If node is absolutely positioned and width is not set explicitly, then deduce it
@@ -206,8 +206,8 @@ pub(super) fn align_and_position_item(
         //  - Alignment style is "stretch"
         //  - The node is not absolutely positioned
         //  - The node does not have auto margins in this axis.
-        if margin.left.is_some()
-            && margin.right.is_some()
+        if authored_margin.left.is_some()
+            && authored_margin.right.is_some()
             && alignment_styles.horizontal == AlignSelf::Stretch
             && position != Position::Absolute
         {
@@ -231,8 +231,8 @@ pub(super) fn align_and_position_item(
         //  - Alignment style is "stretch"
         //  - The node is not absolutely positioned
         //  - The node does not have auto margins in this axis.
-        if margin.top.is_some()
-            && margin.bottom.is_some()
+        if authored_margin.top.is_some()
+            && authored_margin.bottom.is_some()
             && alignment_styles.vertical == AlignSelf::Stretch
             && position != Position::Absolute
         {
@@ -286,7 +286,7 @@ pub(super) fn align_and_position_item(
         width,
         position,
         inset_horizontal,
-        margin.horizontal_components(),
+        authored_margin.horizontal_components(),
         0.0,
         direction,
     );
@@ -300,7 +300,7 @@ pub(super) fn align_and_position_item(
         height,
         position,
         inset_vertical,
-        margin.vertical_components(),
+        authored_margin.vertical_components(),
         baseline_shim,
         Direction::Ltr,
     );
