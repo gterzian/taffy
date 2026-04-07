@@ -146,20 +146,12 @@ fn update_non_empty_subgrid_missing_edge_placeholders<Tree: LayoutGridContainer>
     tree: &mut Tree,
     items: &mut [GridItem],
 ) {
-    fn child_contributes_edge_in_axis<Tree: LayoutGridContainer>(tree: &Tree, child: &GridItem, axis: AbstractAxis) -> bool {
-        !(child.subgrids_axis(axis) && tree.child_count(child.node) == 0)
-    }
-
-    for item in items.iter_mut().filter(|item| item.row_axis_kind == GridAxisKind::Subgrid || item.column_axis_kind == GridAxisKind::Subgrid) {
-        if tree.child_count(item.node) == 0 {
-            continue;
-        }
-
-        let style = tree.get_grid_container_style(item.node);
-        let subgrid_context = tree.get_grid_container_subgrid_context(item.node).cloned();
+    fn place_in_flow_grid_children<Tree: LayoutGridContainer>(tree: &mut Tree, node: NodeId) -> Vec<GridItem> {
+        let style = tree.get_grid_container_style(node);
+        let subgrid_context = tree.get_grid_container_subgrid_context(node).cloned();
         let direction = style.direction();
 
-        let child_styles_iter = || tree.child_ids(item.node).map(|child_node: NodeId| tree.get_grid_child_style(child_node));
+        let child_styles_iter = || tree.child_ids(node).map(|child_node: NodeId| tree.get_grid_child_style(child_node));
         let (col_auto_repetition_count, grid_template_col_count) = compute_explicit_grid_size_in_axis(
             &style,
             None,
@@ -196,10 +188,10 @@ fn update_non_empty_subgrid_missing_edge_placeholders<Tree: LayoutGridContainer>
 
         let (est_col_counts, est_row_counts) =
             compute_grid_size_estimate(explicit_col_count, explicit_row_count, direction, child_styles_iter());
-        let mut child_items = Vec::with_capacity(tree.child_count(item.node));
+        let mut child_items = Vec::with_capacity(tree.child_count(node));
         let mut cell_occupancy_matrix = CellOccupancyMatrix::with_track_counts(est_col_counts, est_row_counts);
         let in_flow_children_iter = || {
-            tree.child_ids(item.node)
+            tree.child_ids(node)
                 .enumerate()
                 .map(|(index, child_node)| (index, child_node, tree.get_grid_child_style(child_node)))
                 .filter(|(_, _, style)| {
@@ -216,6 +208,22 @@ fn update_non_empty_subgrid_missing_edge_placeholders<Tree: LayoutGridContainer>
             style.justify_items().unwrap_or(AlignItems::Stretch),
             &name_resolver,
         );
+
+        child_items
+    }
+
+    fn child_contributes_edge_in_axis<Tree: LayoutGridContainer>(tree: &Tree, child: &GridItem, axis: AbstractAxis) -> bool {
+        !(child.subgrids_axis(axis) && tree.child_count(child.node) == 0)
+    }
+
+    for item in items.iter_mut().filter(|item| item.row_axis_kind == GridAxisKind::Subgrid || item.column_axis_kind == GridAxisKind::Subgrid) {
+        if tree.child_count(item.node) == 0 {
+            continue;
+        }
+        let child_items = place_in_flow_grid_children(tree, item.node);
+
+        let explicit_col_count = item.column.span();
+        let explicit_row_count = item.row.span();
 
         if item.column_axis_kind == GridAxisKind::Subgrid && !child_items.is_empty() {
             item.subgrid_missing_edge_placeholders.left =
