@@ -1,7 +1,7 @@
 //! Implements the track sizing algorithm
 //! <https://www.w3.org/TR/css-grid-1/#layout-algorithm>
 use super::types::{GridItem, GridTrack, TrackCounts};
-use crate::geometry::{AbstractAxis, Line, Size};
+use crate::geometry::{AbsoluteAxis, AbstractAxis, Line, Size};
 use crate::style::{AlignContent, AlignSelf, AvailableSpace};
 use crate::style_helpers::TaffyMinContent;
 use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, SizingMode};
@@ -281,7 +281,7 @@ pub(super) fn resolve_item_track_indexes(items: &mut [GridItem], column_counts: 
 /// Determine (in each axis) whether the item crosses any flexible tracks
 #[inline(always)]
 pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
-    items: &mut Vec<GridItem>,
+    items: &mut [GridItem],
     columns: &[GridTrack],
     rows: &[GridTrack],
 ) {
@@ -329,6 +329,15 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
     // Note: this can only happen both track sizing function have the same fixed track sizing function
     if axis_tracks.iter().all(|track| track.base_size == track.growth_limit) {
         return;
+    }
+
+    match axis {
+        AbstractAxis::Inline => {
+            determine_if_item_crosses_flexible_or_intrinsic_tracks(items, axis_tracks, other_axis_tracks);
+        }
+        AbstractAxis::Block => {
+            determine_if_item_crosses_flexible_or_intrinsic_tracks(items, other_axis_tracks, axis_tracks);
+        }
     }
 
     // Pre-computations for 11.5 Resolve Intrinsic Track Sizes
