@@ -51,6 +51,82 @@ fn track_sizes_for_item_span(tracks: &[GridTrack], placement_indexes: Line<u16>)
     (track_sizes, gutter_sizes)
 }
 
+fn track_span_size(tracks: &[GridTrack], placement_indexes: Line<u16>) -> f32 {
+    tracks[(placement_indexes.start as usize + 1)..(placement_indexes.end as usize)]
+        .iter()
+        .map(|track| track.base_size)
+        .sum()
+}
+
+fn place_in_flow_grid_children<Tree: LayoutGridContainer>(tree: &mut Tree, node: NodeId) -> Vec<GridItem> {
+    let style = tree.get_grid_container_style(node);
+    let subgrid_context = tree.get_grid_container_subgrid_context(node).cloned();
+    let direction = style.direction();
+
+    let child_styles_iter = || tree.child_ids(node).map(|child_node: NodeId| tree.get_grid_child_style(child_node));
+    let (col_auto_repetition_count, grid_template_col_count) = compute_explicit_grid_size_in_axis(
+        &style,
+        None,
+        AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
+        |val, basis| tree.calc(val, basis),
+        subgrid_context.as_ref().and_then(|context| context.columns.as_ref()),
+        AbsoluteAxis::Horizontal,
+    );
+    let (row_auto_repetition_count, grid_template_row_count) = compute_explicit_grid_size_in_axis(
+        &style,
+        None,
+        AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
+        |val, basis| tree.calc(val, basis),
+        subgrid_context.as_ref().and_then(|context| context.rows.as_ref()),
+        AbsoluteAxis::Vertical,
+    );
+
+    let mut name_resolver =
+        NamedLineResolver::new(&style, col_auto_repetition_count, row_auto_repetition_count, subgrid_context.as_ref());
+
+    let explicit_col_count = subgrid_context
+        .as_ref()
+        .and_then(|context| context.columns.as_ref())
+        .map(|context| context.track_count)
+        .unwrap_or_else(|| grid_template_col_count.max(name_resolver.area_column_count()));
+    let explicit_row_count = subgrid_context
+        .as_ref()
+        .and_then(|context| context.rows.as_ref())
+        .map(|context| context.track_count)
+        .unwrap_or_else(|| grid_template_row_count.max(name_resolver.area_row_count()));
+
+    name_resolver.set_explicit_column_count(explicit_col_count);
+    name_resolver.set_explicit_row_count(explicit_row_count);
+
+    let (est_col_counts, est_row_counts) =
+        compute_grid_size_estimate(explicit_col_count, explicit_row_count, direction, child_styles_iter());
+    let mut child_items = Vec::with_capacity(tree.child_count(node));
+    let mut cell_occupancy_matrix = CellOccupancyMatrix::with_track_counts(est_col_counts, est_row_counts);
+    let in_flow_children_iter = || {
+        tree.child_ids(node)
+            .enumerate()
+            .map(|(index, child_node)| (index, child_node, tree.get_grid_child_style(child_node)))
+            .filter(|(_, _, style)| {
+                style.box_generation_mode() != BoxGenerationMode::None && style.position() != Position::Absolute
+            })
+    };
+    place_grid_items(
+        &mut cell_occupancy_matrix,
+        &mut child_items,
+        in_flow_children_iter,
+        direction,
+        style.grid_auto_flow(),
+        style.align_items().unwrap_or(AlignItems::Stretch),
+        style.justify_items().unwrap_or(AlignItems::Stretch),
+        &name_resolver,
+    );
+
+    let final_col_counts = *cell_occupancy_matrix.track_counts(AbsoluteAxis::Horizontal);
+    let final_row_counts = *cell_occupancy_matrix.track_counts(AbsoluteAxis::Vertical);
+    resolve_item_track_indexes(&mut child_items, final_col_counts, final_row_counts);
+    child_items
+}
+
 fn update_child_subgrid_contexts<Tree: LayoutGridContainer>(
     tree: &mut Tree,
     name_resolver: &NamedLineResolver<Tree::CustomIdent>,
@@ -148,75 +224,6 @@ fn update_non_empty_subgrid_missing_edge_placeholders<Tree: LayoutGridContainer>
 ) {
     fn child_contributes_edge_in_axis<Tree: LayoutGridContainer>(tree: &Tree, child: &GridItem, axis: AbstractAxis) -> bool {
         !(child.subgrids_axis(axis) && tree.child_count(child.node) == 0)
-    }
-
-    fn place_in_flow_grid_children<Tree: LayoutGridContainer>(tree: &mut Tree, node: NodeId) -> Vec<GridItem> {
-        let style = tree.get_grid_container_style(node);
-        let subgrid_context = tree.get_grid_container_subgrid_context(node).cloned();
-        let direction = style.direction();
-
-        let child_styles_iter = || tree.child_ids(node).map(|child_node: NodeId| tree.get_grid_child_style(child_node));
-        let (col_auto_repetition_count, grid_template_col_count) = compute_explicit_grid_size_in_axis(
-            &style,
-            None,
-            AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
-            |val, basis| tree.calc(val, basis),
-            subgrid_context.as_ref().and_then(|context| context.columns.as_ref()),
-            AbsoluteAxis::Horizontal,
-        );
-        let (row_auto_repetition_count, grid_template_row_count) = compute_explicit_grid_size_in_axis(
-            &style,
-            None,
-            AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
-            |val, basis| tree.calc(val, basis),
-            subgrid_context.as_ref().and_then(|context| context.rows.as_ref()),
-            AbsoluteAxis::Vertical,
-        );
-
-        let mut name_resolver =
-            NamedLineResolver::new(&style, col_auto_repetition_count, row_auto_repetition_count, subgrid_context.as_ref());
-
-        let explicit_col_count = subgrid_context
-            .as_ref()
-            .and_then(|context| context.columns.as_ref())
-            .map(|context| context.track_count)
-            .unwrap_or_else(|| grid_template_col_count.max(name_resolver.area_column_count()));
-        let explicit_row_count = subgrid_context
-            .as_ref()
-            .and_then(|context| context.rows.as_ref())
-            .map(|context| context.track_count)
-            .unwrap_or_else(|| grid_template_row_count.max(name_resolver.area_row_count()));
-
-        name_resolver.set_explicit_column_count(explicit_col_count);
-        name_resolver.set_explicit_row_count(explicit_row_count);
-
-        let (est_col_counts, est_row_counts) =
-            compute_grid_size_estimate(explicit_col_count, explicit_row_count, direction, child_styles_iter());
-        let mut child_items = Vec::with_capacity(tree.child_count(node));
-        let mut cell_occupancy_matrix = CellOccupancyMatrix::with_track_counts(est_col_counts, est_row_counts);
-        let in_flow_children_iter = || {
-            tree.child_ids(node)
-                .enumerate()
-                .map(|(index, child_node)| (index, child_node, tree.get_grid_child_style(child_node)))
-                .filter(|(_, _, style)| {
-                    style.box_generation_mode() != BoxGenerationMode::None && style.position() != Position::Absolute
-                })
-        };
-        place_grid_items(
-            &mut cell_occupancy_matrix,
-            &mut child_items,
-            in_flow_children_iter,
-            direction,
-            style.grid_auto_flow(),
-            style.align_items().unwrap_or(AlignItems::Stretch),
-            style.justify_items().unwrap_or(AlignItems::Stretch),
-            &name_resolver,
-        );
-
-        let final_col_counts = *cell_occupancy_matrix.track_counts(AbsoluteAxis::Horizontal);
-        let final_row_counts = *cell_occupancy_matrix.track_counts(AbsoluteAxis::Vertical);
-        resolve_item_track_indexes(&mut child_items, final_col_counts, final_row_counts);
-        child_items
     }
 
     for item in items.iter_mut().filter(|item| item.row_axis_kind == GridAxisKind::Subgrid || item.column_axis_kind == GridAxisKind::Subgrid) {
@@ -393,6 +400,111 @@ fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
             items,
         );
     }
+}
+
+fn apply_subgrid_item_margin_adjustments_from_container<Tree: LayoutGridContainer>(
+    tree: &mut Tree,
+    node: NodeId,
+    parent_inline_size: f32,
+    items: &mut [GridItem],
+) {
+    let style = tree.get_grid_container_style(node);
+    let direction = style.direction();
+    let percentage_basis = Some(parent_inline_size);
+    let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+    let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+    let scrollbar_gutter = style.overflow().transpose().map(|overflow| match overflow {
+        Overflow::Scroll => style.scrollbar_width(),
+        _ => 0.0,
+    });
+    let mut content_box_inset = padding + border;
+    content_box_inset.bottom += scrollbar_gutter.y;
+    match direction {
+        Direction::Ltr => content_box_inset.right += scrollbar_gutter.x,
+        Direction::Rtl => content_box_inset.left += scrollbar_gutter.x,
+    }
+
+    let resolved_margin = style
+        .margin()
+        .map(|margin| margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)));
+    let resolved_gap = style.gap().map(|gap| gap.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)));
+    let subgrid_context = tree.get_grid_container_subgrid_context(node).cloned();
+    drop(style);
+
+    apply_subgrid_item_margin_adjustments(
+        direction,
+        content_box_inset,
+        resolved_margin,
+        subgrid_context.as_ref(),
+        resolved_gap,
+        items,
+    );
+}
+
+fn build_block_sizing_items<Tree: LayoutGridContainer>(
+    tree: &mut Tree,
+    columns: &[GridTrack],
+    items: &[GridItem],
+) -> Vec<GridItem> {
+    fn collect_from_item<Tree: LayoutGridContainer>(
+        tree: &mut Tree,
+        columns: &[GridTrack],
+        item: &GridItem,
+        output: &mut Vec<GridItem>,
+    ) {
+        if item.row_axis_kind != GridAxisKind::Subgrid || tree.child_count(item.node) == 0 {
+            output.push(item.clone());
+            return;
+        }
+
+        let parent_inline_size = track_span_size(columns, item.column_indexes);
+        let mut child_items = place_in_flow_grid_children(tree, item.node);
+        if child_items.is_empty() {
+            output.push(item.clone());
+            return;
+        }
+
+        let subgrid_row_span = item.row.span() as i16;
+        let has_baseline_participant = child_items.iter().any(|child| child.align_self == AlignSelf::Baseline);
+        let needs_row_local_hoist = child_items.iter().any(|child| {
+            child.row.start.0 > 0 || child.row.end.0 < subgrid_row_span
+        });
+        if has_baseline_participant || !needs_row_local_hoist {
+            output.push(item.clone());
+            return;
+        }
+
+        apply_subgrid_item_margin_adjustments_from_container(tree, item.node, parent_inline_size, &mut child_items);
+        update_non_empty_subgrid_missing_edge_placeholders(tree, &mut child_items);
+
+        for mut child in child_items {
+            child.row = Line {
+                start: OriginZeroLine(item.row.start.0 + child.row.start.0),
+                end: OriginZeroLine(item.row.start.0 + child.row.end.0),
+            };
+            child.column = item.column;
+            child.row_indexes = Line { start: 0, end: 0 };
+            child.column_indexes = Line { start: 0, end: 0 };
+            child.crosses_flexible_row = false;
+            child.crosses_flexible_column = false;
+            child.crosses_intrinsic_row = false;
+            child.crosses_intrinsic_column = false;
+            child.available_space_cache = None;
+            child.min_content_contribution_cache = Size::NONE;
+            child.max_content_contribution_cache = Size::NONE;
+            child.minimum_contribution_cache = Size::NONE;
+            child.grid_area_size_override.width = Some(parent_inline_size);
+            child.grid_area_size_override.height = None;
+
+            collect_from_item(tree, columns, &child, output);
+        }
+    }
+
+    let mut block_sizing_items = Vec::new();
+    for item in items {
+        collect_from_item(tree, columns, item, &mut block_sizing_items);
+    }
+    block_sizing_items
 }
 
 /// Grid layout algorithm
@@ -739,6 +851,10 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     items.iter_mut().for_each(|item| item.available_space_cache = None);
 
+    let mut block_sizing_items = build_block_sizing_items(tree, &columns, &items);
+    resolve_item_track_indexes(&mut block_sizing_items, final_col_counts, final_row_counts);
+    determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut block_sizing_items, &columns, &rows);
+
     // Run track sizing algorithm for Block axis
     track_sizing_algorithm(
         tree,
@@ -751,13 +867,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         inner_node_size,
         &mut rows,
         &mut columns,
-        &mut items,
+        &mut block_sizing_items,
         |track: &GridTrack, _, _| Some(track.base_size),
         false, // TODO: Support baseline alignment in the vertical axis
     );
+    update_child_subgrid_contexts(tree, &name_resolver, direction, &columns, &rows, &items, true, true);
     let initial_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.height = inner_node_size.height.or_else(|| initial_row_sum.into());
-    update_child_subgrid_contexts(tree, &name_resolver, direction, &columns, &rows, &items, true, true);
 
     debug_log!("initial_column_sum", dbg:initial_column_sum);
     debug_log!(dbg: columns.iter().map(|track| track.base_size).collect::<Vec<_>>());
@@ -898,13 +1014,19 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         //   - Any grid item crossing an intrinsically sized track's min content contribution height has changed
         // TODO: Only rerun sizing for tracks that actually require it rather than for all tracks if any need it.
         let mut rerun_row_sizing;
+        let mut block_sizing_items = build_block_sizing_items(tree, &columns, &items);
+        resolve_item_track_indexes(&mut block_sizing_items, final_col_counts, final_row_counts);
+        determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut block_sizing_items, &columns, &rows);
 
         let parent_height_indefinite = !available_space.height.is_definite();
         rerun_row_sizing = parent_height_indefinite && has_percentage_row;
 
         if !rerun_row_sizing {
             intrinsic_row_contribution_changed =
-                items.iter_mut().filter(|item| item.crosses_intrinsic_row).any(|item| {
+                block_sizing_items
+                    .iter_mut()
+                    .filter(|item| item.crosses_intrinsic_row)
+                    .any(|item| {
                     let available_space = item.available_space(
                         AbstractAxis::Block,
                         &columns,
@@ -939,7 +1061,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 });
             rerun_row_sizing = intrinsic_row_contribution_changed;
         } else {
-            items.iter_mut().for_each(|item| {
+            block_sizing_items.iter_mut().for_each(|item| {
                 // Clear intrinsic height caches
                 item.available_space_cache = None;
                 item.min_content_contribution_cache.height = None;
@@ -961,7 +1083,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 inner_node_size,
                 &mut rows,
                 &mut columns,
-                &mut items,
+                &mut block_sizing_items,
                 |track: &GridTrack, _, _| Some(track.base_size),
                 false, // TODO: Support baseline alignment in the vertical axis
             );

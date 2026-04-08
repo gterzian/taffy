@@ -10,7 +10,7 @@ use crate::{BoxSizing, GridAxisKind, GridItemStyle, LengthPercentage};
 use core::ops::Range;
 
 /// Represents a single grid item
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(in super::super) struct GridItem {
     /// The id of the node that this item represents
     pub node: NodeId,
@@ -65,6 +65,9 @@ pub(in super::super) struct GridItem {
     pub subgrid_layout_margin_adjustment: Rect<f32>,
     /// Edges of a non-empty subgrid that need placeholder inflation because no child reaches them.
     pub subgrid_missing_edge_placeholders: Rect<bool>,
+    /// A synthetic participant can override the grid-area size seen by intrinsic sizing in
+    /// one axis without pretending to occupy the ancestor grid's track space in the other.
+    pub grid_area_size_override: Size<Option<f32>>,
     /// The items first baseline (horizontal)
     pub baseline: Option<f32>,
     /// Shim for baseline alignment that acts like an extra top margin
@@ -157,6 +160,7 @@ impl GridItem {
             subgrid_margin_adjustment: Rect::ZERO,
             subgrid_layout_margin_adjustment: Rect::ZERO,
             subgrid_missing_edge_placeholders: Rect { left: false, right: false, top: false, bottom: false },
+            grid_area_size_override: Size::NONE,
             baseline: None,
             baseline_shim: 0.0,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
@@ -396,6 +400,10 @@ impl GridItem {
         axis_parent_size: Option<f32>,
         resolve_calc_value: &dyn Fn(*const (), f32) -> f32,
     ) -> Option<f32> {
+        if let Some(size) = self.grid_area_size_override.get(axis) {
+            return Some(size);
+        }
+
         axis_tracks[self.track_range_excluding_lines(axis)]
             .iter()
             .map(|track| {
@@ -515,6 +523,12 @@ impl GridItem {
         other_axis_available_space: Option<f32>,
         get_track_size_estimate: impl Fn(&GridTrack, Option<f32>) -> Option<f32>,
     ) -> Size<Option<f32>> {
+        if let Some(size) = self.grid_area_size_override.get(axis.other()) {
+            let mut override_size = Size::NONE;
+            override_size.set(axis.other(), Some(size));
+            return override_size;
+        }
+
         let item_other_axis_size: Option<f32> = {
             other_axis_tracks[self.track_range_excluding_lines(axis.other())]
                 .iter()
