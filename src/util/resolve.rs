@@ -60,7 +60,11 @@ impl MaybeResolve<Option<f32>, Option<f32>> for Dimension {
     /// Can return `None`
     fn maybe_resolve(self, context: Option<f32>, calc: impl Fn(*const (), f32) -> f32) -> Option<f32> {
         match self.0.tag() {
-            CompactLength::AUTO_TAG => None,
+            CompactLength::AUTO_TAG
+            | CompactLength::MIN_CONTENT_TAG
+            | CompactLength::MAX_CONTENT_TAG
+            | CompactLength::FIT_CONTENT_PX_TAG
+            | CompactLength::FIT_CONTENT_PERCENT_TAG => None,
             CompactLength::LENGTH_TAG => Some(self.0.value()),
             CompactLength::PERCENT_TAG => context.map(|dim| dim * self.0.value()),
             #[cfg(feature = "calc")]
@@ -175,6 +179,7 @@ mod tests {
 
     mod maybe_resolve_dimension {
         use super::mr_case;
+        use crate::CompactLength;
         use crate::style::Dimension;
         use crate::style_helpers::*;
 
@@ -212,6 +217,17 @@ mod tests {
             mr_case(Dimension::from_percent(1.0), Some(5.0), Some(5.0));
             mr_case(Dimension::from_percent(1.0), Some(-5.0), Some(-5.0));
             mr_case(Dimension::from_percent(1.0), Some(50.0), Some(50.0));
+        }
+
+        #[test]
+        fn resolve_content_keywords() {
+            let min_content = unsafe { Dimension::from_raw(CompactLength::min_content()) };
+            let max_content = unsafe { Dimension::from_raw(CompactLength::max_content()) };
+
+            mr_case(min_content, None, None);
+            mr_case(min_content, Some(5.0), None);
+            mr_case(max_content, None, None);
+            mr_case(max_content, Some(5.0), None);
         }
     }
 

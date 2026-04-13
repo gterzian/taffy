@@ -315,14 +315,28 @@ fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
 
     fn apply_layout_margin_axis(
         axis: AbstractAxis,
+        inherited_gutter_sizes: &[f32],
+        current_gap: f32,
         explicit_line_end: i16,
         edge_margin: Line<f32>,
         items: &mut [GridItem],
     ) {
         for item in items.iter_mut() {
             let placement = item.placement(axis);
-            let start_adjustment = if placement.start.0 <= 0 { edge_margin.start } else { 0.0 };
-            let end_adjustment = if placement.end.0 >= explicit_line_end { edge_margin.end } else { 0.0 };
+
+            let start_adjustment = if placement.start.0 <= 0 {
+                edge_margin.start
+            } else {
+                let parent_gutter = inherited_gutter_sizes.get((placement.start.0 - 1) as usize).copied().unwrap_or(0.0);
+                (current_gap - parent_gutter) * 0.5
+            };
+
+            let end_adjustment = if placement.end.0 >= explicit_line_end {
+                edge_margin.end
+            } else {
+                let parent_gutter = inherited_gutter_sizes.get((placement.end.0 - 1) as usize).copied().unwrap_or(0.0);
+                (current_gap - parent_gutter) * 0.5
+            };
 
             match axis {
                 AbstractAxis::Inline => {
@@ -377,6 +391,8 @@ fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
         );
         apply_layout_margin_axis(
             AbstractAxis::Inline,
+            inherited_gutters,
+            resolved_gap.width,
             inherited_gutters.len() as i16 + 1,
             inline_margin_adjustment,
             items,
@@ -389,6 +405,9 @@ fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
         let inherited_sizing_adjustment = inherited
             .map(|context| context.inherited_sizing_adjustment)
             .unwrap_or(Line { start: 0.0, end: 0.0 });
+        let inherited_layout_margin_adjustment = inherited
+            .map(|context| context.inherited_layout_margin_adjustment)
+            .unwrap_or(Line { start: 0.0, end: 0.0 });
         apply_axis(
             AbstractAxis::Block,
             inherited_gutters,
@@ -396,6 +415,17 @@ fn apply_subgrid_item_margin_adjustments<S: crate::CheapCloneStr>(
             Line {
                 start: inherited_sizing_adjustment.start + content_box_inset.top,
                 end: inherited_sizing_adjustment.end + content_box_inset.bottom,
+            },
+            items,
+        );
+        apply_layout_margin_axis(
+            AbstractAxis::Block,
+            inherited_gutters,
+            resolved_gap.height,
+            inherited_gutters.len() as i16 + 1,
+            Line {
+                start: inherited_layout_margin_adjustment.start + resolved_margin.top,
+                end: inherited_layout_margin_adjustment.end + resolved_margin.bottom,
             },
             items,
         );
@@ -441,18 +471,39 @@ fn apply_subgrid_item_margin_adjustments_from_container<Tree: LayoutGridContaine
     );
 }
 
-fn build_block_sizing_items<Tree: LayoutGridContainer>(
+fn build_axis_sizing_items<Tree: LayoutGridContainer>(
     tree: &mut Tree,
+    axis: AbstractAxis,
     columns: &[GridTrack],
+    rows: &[GridTrack],
     items: &[GridItem],
 ) -> Vec<GridItem> {
+    fn translated_placement(
+        parent: Line<OriginZeroLine>,
+        child: Line<OriginZeroLine>,
+    ) -> Line<OriginZeroLine> {
+        Line {
+            start: OriginZeroLine(parent.start.0 + child.start.0),
+            end: OriginZeroLine(parent.start.0 + child.end.0),
+        }
+    }
+
+    fn set_placement(item: &mut GridItem, axis: AbstractAxis, placement: Line<OriginZeroLine>) {
+        match axis {
+            AbstractAxis::Inline => item.column = placement,
+            AbstractAxis::Block => item.row = placement,
+        }
+    }
+
     fn collect_from_item<Tree: LayoutGridContainer>(
         tree: &mut Tree,
+        axis: AbstractAxis,
         columns: &[GridTrack],
+        rows: &[GridTrack],
         item: &GridItem,
         output: &mut Vec<GridItem>,
     ) {
-        if item.row_axis_kind != GridAxisKind::Subgrid || tree.child_count(item.node) == 0 {
+        if !item.subgrids_axis(axis) || tree.child_count(item.node) == 0 {
             output.push(item.clone());
             return;
         }
@@ -464,12 +515,13 @@ fn build_block_sizing_items<Tree: LayoutGridContainer>(
             return;
         }
 
-        let subgrid_row_span = item.row.span() as i16;
+        let subgrid_axis_span = item.span(axis) as i16;
         let has_baseline_participant = child_items.iter().any(|child| child.align_self == AlignSelf::Baseline);
-        let needs_row_local_hoist = child_items.iter().any(|child| {
-            child.row.start.0 > 0 || child.row.end.0 < subgrid_row_span
+        let needs_axis_local_hoist = child_items.iter().any(|child| {
+            let placement = child.placement(axis);
+            placement.start.0 > 0 || placement.end.0 < subgrid_axis_span
         });
-        if has_baseline_participant || !needs_row_local_hoist {
+        if has_baseline_participant || !needs_axis_local_hoist {
             output.push(item.clone());
             return;
         }
@@ -477,12 +529,34 @@ fn build_block_sizing_items<Tree: LayoutGridContainer>(
         apply_subgrid_item_margin_adjustments_from_container(tree, item.node, parent_inline_size, &mut child_items);
         update_non_empty_subgrid_missing_edge_placeholders(tree, &mut child_items);
 
+        let other_axis = axis.other();
+        let other_axis_tracks = match other_axis {
+            AbstractAxis::Inline => columns,
+            AbstractAxis::Block => rows,
+        };
+        let other_axis_parent_size = track_span_size(other_axis_tracks, item.placement_indexes(other_axis));
+
         for mut child in child_items {
-            child.row = Line {
-                start: OriginZeroLine(item.row.start.0 + child.row.start.0),
-                end: OriginZeroLine(item.row.start.0 + child.row.end.0),
-            };
-            child.column = item.column;
+            let child_axis_placement = child.placement(axis);
+            set_placement(
+                &mut child,
+                axis,
+                translated_placement(item.placement(axis), child_axis_placement),
+            );
+
+            if item.subgrids_axis(other_axis) {
+                let child_other_axis_placement = child.placement(other_axis);
+                set_placement(
+                    &mut child,
+                    other_axis,
+                    translated_placement(item.placement(other_axis), child_other_axis_placement),
+                );
+                child.grid_area_size_override.set(other_axis, None);
+            } else {
+                set_placement(&mut child, other_axis, item.placement(other_axis));
+                child.grid_area_size_override.set(other_axis, Some(other_axis_parent_size));
+            }
+
             child.row_indexes = Line { start: 0, end: 0 };
             child.column_indexes = Line { start: 0, end: 0 };
             child.crosses_flexible_row = false;
@@ -493,18 +567,17 @@ fn build_block_sizing_items<Tree: LayoutGridContainer>(
             child.min_content_contribution_cache = Size::NONE;
             child.max_content_contribution_cache = Size::NONE;
             child.minimum_contribution_cache = Size::NONE;
-            child.grid_area_size_override.width = Some(parent_inline_size);
-            child.grid_area_size_override.height = None;
+            child.grid_area_size_override.set(axis, None);
 
-            collect_from_item(tree, columns, &child, output);
+            collect_from_item(tree, axis, columns, rows, &child, output);
         }
     }
 
-    let mut block_sizing_items = Vec::new();
+    let mut axis_sizing_items = Vec::new();
     for item in items {
-        collect_from_item(tree, columns, item, &mut block_sizing_items);
+        collect_from_item(tree, axis, columns, rows, item, &mut axis_sizing_items);
     }
-    block_sizing_items
+    axis_sizing_items
 }
 
 /// Grid layout algorithm
@@ -824,8 +897,12 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // Record this as a boolean (per-axis) on each item for later use in the track-sizing algorithm
     determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut items, &columns, &rows);
 
+    let mut inline_sizing_items = build_axis_sizing_items(tree, AbstractAxis::Inline, &columns, &rows, &items);
+    resolve_item_track_indexes(&mut inline_sizing_items, final_col_counts, final_row_counts);
+    determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut inline_sizing_items, &columns, &rows);
+
     // Determine if the grid has any baseline aligned items
-    let has_baseline_aligned_item = items.iter().any(|item| item.align_self == AlignSelf::Baseline);
+    let has_baseline_aligned_item = inline_sizing_items.iter().any(|item| item.align_self == AlignSelf::Baseline);
 
     // Run track sizing algorithm for Inline axis
     track_sizing_algorithm(
@@ -839,7 +916,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         inner_node_size,
         &mut columns,
         &mut rows,
-        &mut items,
+        &mut inline_sizing_items,
         |track: &GridTrack, parent_size: Option<f32>, tree: &Tree| {
             track.max_track_sizing_function.definite_value(parent_size, |val, basis| tree.calc(val, basis))
         },
@@ -851,7 +928,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     items.iter_mut().for_each(|item| item.available_space_cache = None);
 
-    let mut block_sizing_items = build_block_sizing_items(tree, &columns, &items);
+    let mut block_sizing_items = build_axis_sizing_items(tree, AbstractAxis::Block, &columns, &rows, &items);
     resolve_item_track_indexes(&mut block_sizing_items, final_col_counts, final_row_counts);
     determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut block_sizing_items, &columns, &rows);
 
@@ -940,11 +1017,17 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let has_percentage_column = columns.iter().any(|track| track.uses_percentage());
     let has_percentage_row = rows.iter().any(|track| track.uses_percentage());
     let parent_width_indefinite = !available_space.width.is_definite();
+    let mut inline_sizing_items = build_axis_sizing_items(tree, AbstractAxis::Inline, &columns, &rows, &items);
+    resolve_item_track_indexes(&mut inline_sizing_items, final_col_counts, final_row_counts);
+    determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut inline_sizing_items, &columns, &rows);
     rerun_column_sizing = parent_width_indefinite && has_percentage_column;
 
     if !rerun_column_sizing {
         intrinsic_column_contribution_changed =
-            items.iter_mut().filter(|item| item.crosses_intrinsic_column).any(|item| {
+            inline_sizing_items
+                .iter_mut()
+                .filter(|item| item.crosses_intrinsic_column)
+                .any(|item| {
                 let available_space = item.available_space(
                     AbstractAxis::Inline,
                     &rows,
@@ -980,7 +1063,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         rerun_column_sizing = intrinsic_column_contribution_changed;
     } else {
         // Clear intrinsic width caches
-        items.iter_mut().for_each(|item| {
+        inline_sizing_items.iter_mut().for_each(|item| {
             item.available_space_cache = None;
             item.min_content_contribution_cache.width = None;
             item.max_content_contribution_cache.width = None;
@@ -1003,7 +1086,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             inner_node_size,
             &mut columns,
             &mut rows,
-            &mut items,
+            &mut inline_sizing_items,
             |track: &GridTrack, _, _| Some(track.base_size),
             has_baseline_aligned_item,
         );
@@ -1014,7 +1097,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         //   - Any grid item crossing an intrinsically sized track's min content contribution height has changed
         // TODO: Only rerun sizing for tracks that actually require it rather than for all tracks if any need it.
         let mut rerun_row_sizing;
-        let mut block_sizing_items = build_block_sizing_items(tree, &columns, &items);
+        let mut block_sizing_items = build_axis_sizing_items(tree, AbstractAxis::Block, &columns, &rows, &items);
         resolve_item_track_indexes(&mut block_sizing_items, final_col_counts, final_row_counts);
         determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut block_sizing_items, &columns, &rows);
 
@@ -1178,6 +1261,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             container_alignment_styles,
             item.baseline_shim,
             item.subgrid_margin_adjustment,
+            item.subgrid_layout_margin_adjustment,
             direction,
         );
         item.y_position = y_position;
@@ -1279,6 +1363,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                     grid_area,
                     container_alignment_styles,
                     0.0,
+                    Rect::ZERO,
                     Rect::ZERO,
                     direction,
                 );

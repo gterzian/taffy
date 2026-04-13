@@ -6,6 +6,7 @@ use crate::geometry::{Line, Point, Rect, Size};
 use crate::style::{AlignItems, AlignSelf, AvailableSpace, Dimension, LengthPercentageAuto, Overflow};
 use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
+use crate::CompactLength;
 use crate::{BoxSizing, GridAxisKind, GridItemStyle, LengthPercentage};
 use core::ops::Range;
 
@@ -61,7 +62,7 @@ pub(in super::super) struct GridItem {
     pub column_axis_kind: GridAxisKind,
     /// Extra margin-like space inherited from ancestor subgrid edges and gutter differences.
     pub subgrid_margin_adjustment: Rect<f32>,
-    /// Ancestor margin projected into final positioning for subgridded axes.
+    /// Ancestor margin and gutter-delta space projected into final positioning for subgridded axes.
     pub subgrid_layout_margin_adjustment: Rect<f32>,
     /// Edges of a non-empty subgrid that need placeholder inflation because no child reaches them.
     pub subgrid_missing_edge_placeholders: Rect<bool>,
@@ -107,6 +108,14 @@ pub(in super::super) struct GridItem {
 }
 
 impl GridItem {
+    fn preferred_size_constraint(&self, axis: AbstractAxis) -> Option<AvailableSpace> {
+        match self.size.get(axis).tag() {
+            CompactLength::MIN_CONTENT_TAG => Some(AvailableSpace::MinContent),
+            CompactLength::MAX_CONTENT_TAG => Some(AvailableSpace::MaxContent),
+            _ => None,
+        }
+    }
+
     /// Resolves each side of a padding or border rect against a shared percentage basis.
     fn resolved_axis_side_lengths(
         rect: Rect<LengthPercentage>,
@@ -447,6 +456,8 @@ impl GridItem {
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+        let preferred_inline_constraint = self.preferred_size_constraint(AbstractAxis::Inline);
+        let preferred_block_constraint = self.preferred_size_constraint(AbstractAxis::Block);
         let inherent_size = self
             .size
             .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
@@ -472,7 +483,11 @@ impl GridItem {
             //  - Alignment style is "stretch"
             //  - The node is not absolutely positioned
             //  - The node does not have auto margins in this axis.
-            if !self.margin.left.is_auto() && !self.margin.right.is_auto() && self.justify_self == AlignSelf::Stretch {
+            if preferred_inline_constraint.is_none() &&
+                !self.margin.left.is_auto() &&
+                !self.margin.right.is_auto() &&
+                self.justify_self == AlignSelf::Stretch
+            {
                 let stretched_width = grid_area_minus_item_margins_size.width;
                 if self.subgrids_axis(AbstractAxis::Inline) && stretched_width == Some(0.0) {
                     return None;
@@ -492,7 +507,11 @@ impl GridItem {
             //  - Alignment style is "stretch"
             //  - The node is not absolutely positioned
             //  - The node does not have auto margins in this axis.
-            if !self.margin.top.is_auto() && !self.margin.bottom.is_auto() && self.align_self == AlignSelf::Stretch {
+            if preferred_block_constraint.is_none() &&
+                !self.margin.top.is_auto() &&
+                !self.margin.bottom.is_auto() &&
+                self.align_self == AlignSelf::Stretch
+            {
                 let stretched_height = grid_area_minus_item_margins_size.height;
                 if self.subgrids_axis(AbstractAxis::Block) && stretched_height == Some(0.0) {
                     return None;
@@ -510,6 +529,35 @@ impl GridItem {
         let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);
 
         Size { width, height }
+    }
+
+    fn measure_content_sized_preferred_axis(
+        &self,
+        axis: AbstractAxis,
+        tree: &mut impl LayoutPartialTree,
+        grid_area_size: Size<Option<f32>>,
+        available_space: Size<AvailableSpace>,
+        inner_node_size: Size<Option<f32>>,
+    ) -> Option<f32> {
+        let preferred_constraint = self.preferred_size_constraint(axis)?;
+
+        let mut known_dimensions = self.known_dimensions(tree, grid_area_size);
+        known_dimensions.set(axis, None);
+
+        let mut preferred_available_space = available_space;
+        preferred_available_space.set(axis, preferred_constraint);
+
+        let contribution = tree.measure_child_size(
+            self.node,
+            known_dimensions,
+            grid_area_size,
+            preferred_available_space,
+            SizingMode::InherentSize,
+            axis.as_abs_naive(),
+            Line::FALSE,
+        ) - self.subgrid_self_duplicate_contribution(axis, tree, inner_node_size);
+
+        Some(contribution.max(self.empty_subgrid_padding_border_floor(axis, tree, inner_node_size)))
     }
 
     /// Compute the available_space to be passed to the child sizing functions
@@ -587,6 +635,17 @@ impl GridItem {
         available_space: Size<Option<f32>>,
         inner_node_size: Size<Option<f32>>,
     ) -> f32 {
+        let available_space = available_space.map(|opt| match opt {
+            Some(size) => AvailableSpace::Definite(size),
+            None => AvailableSpace::MinContent,
+        });
+
+        if let Some(contribution) =
+            self.measure_content_sized_preferred_axis(axis, tree, grid_area_size, available_space, inner_node_size)
+        {
+            return contribution;
+        }
+
         let known_dimensions = self.known_dimensions(tree, grid_area_size);
         // The child sees the grid area as its containing block during intrinsic measurement, so
         // percentage box properties resolve against the grid area when that size is definite.
@@ -597,10 +656,7 @@ impl GridItem {
             self.node,
             known_dimensions,
             grid_area_size,
-            available_space.map(|opt| match opt {
-                Some(size) => AvailableSpace::Definite(size),
-                None => AvailableSpace::MinContent,
-            }),
+            available_space,
             SizingMode::InherentSize,
             axis.as_abs_naive(),
             Line::FALSE,
@@ -635,6 +691,17 @@ impl GridItem {
         available_space: Size<Option<f32>>,
         inner_node_size: Size<Option<f32>>,
     ) -> f32 {
+        let available_space = available_space.map(|opt| match opt {
+            Some(size) => AvailableSpace::Definite(size),
+            None => AvailableSpace::MaxContent,
+        });
+
+        if let Some(contribution) =
+            self.measure_content_sized_preferred_axis(axis, tree, grid_area_size, available_space, inner_node_size)
+        {
+            return contribution;
+        }
+
         let known_dimensions = self.known_dimensions(tree, grid_area_size);
         // See the min-content path above. Max-content measurement uses the same containing-block
         // basis so percentage-dependent item geometry is measured from the grid area rather than
@@ -643,10 +710,7 @@ impl GridItem {
             self.node,
             known_dimensions,
             grid_area_size,
-            available_space.map(|opt| match opt {
-                Some(size) => AvailableSpace::Definite(size),
-                None => AvailableSpace::MaxContent,
-            }),
+            available_space,
             SizingMode::InherentSize,
             axis.as_abs_naive(),
             Line::FALSE,
@@ -697,19 +761,22 @@ impl GridItem {
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
-        let size = self
-            .size
-            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(self.aspect_ratio)
-            .maybe_add(box_sizing_adjustment)
-            .get(axis)
-            .or_else(|| {
-                self.min_size
-                    .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-                    .maybe_apply_aspect_ratio(self.aspect_ratio)
-                    .maybe_add(box_sizing_adjustment)
-                    .get(axis)
-            })
+        let size = if self.preferred_size_constraint(axis).is_some() {
+            Some(self.min_content_contribution_cached(axis, tree, grid_area_size, grid_area_size, inner_node_size))
+        } else {
+            self.size
+                .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
+                .maybe_apply_aspect_ratio(self.aspect_ratio)
+                .maybe_add(box_sizing_adjustment)
+                .get(axis)
+        }
+        .or_else(|| {
+            self.min_size
+                .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
+                .maybe_apply_aspect_ratio(self.aspect_ratio)
+                .maybe_add(box_sizing_adjustment)
+                .get(axis)
+        })
             .or_else(|| self.overflow.get(axis).maybe_into_automatic_min_size())
             .unwrap_or_else(|| {
                 // Automatic minimum size. See https://www.w3.org/TR/css-grid-1/#min-size-auto

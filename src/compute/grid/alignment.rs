@@ -2,7 +2,7 @@
 use super::types::GridTrack;
 use crate::compute::common::alignment::{apply_alignment_fallback, compute_alignment_offset};
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
-use crate::style::{AlignContent, AlignItems, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow, Position};
+use crate::style::{AlignContent, AlignItems, AlignSelf, AvailableSpace, CoreStyle, Dimension, GridItemStyle, Overflow, Position};
 use crate::tree::{Layout, LayoutPartialTreeExt, NodeId, SizingMode};
 use crate::util::sys::f32_max;
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
@@ -10,6 +10,31 @@ use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 #[cfg(feature = "content_size")]
 use crate::compute::common::content_size::compute_content_size_contribution;
 use crate::{BoxSizing, Direction, GridAxisKind, LayoutGridContainer};
+use crate::CompactLength;
+
+fn preferred_size_constraint(size: Dimension) -> Option<AvailableSpace> {
+    match size.tag() {
+        CompactLength::MIN_CONTENT_TAG => Some(AvailableSpace::MinContent),
+        CompactLength::MAX_CONTENT_TAG => Some(AvailableSpace::MaxContent),
+        _ => None,
+    }
+}
+
+fn ignore_subgrid_axis_constraints(
+    mut size: Size<Option<f32>>,
+    horizontal_axis_kind: GridAxisKind,
+    vertical_axis_kind: GridAxisKind,
+    subgrid_min_size: Size<Option<f32>>,
+) -> Size<Option<f32>> {
+    if horizontal_axis_kind == GridAxisKind::Subgrid {
+        size.width = subgrid_min_size.width;
+    }
+    if vertical_axis_kind == GridAxisKind::Subgrid {
+        size.height = subgrid_min_size.height;
+    }
+
+    size
+}
 
 /// Align the grid tracks within the grid according to the align-content (rows) or
 /// justify-content (columns) property. This only does anything if the size of the
@@ -71,6 +96,7 @@ pub(super) fn align_and_position_item(
     container_alignment_styles: InBothAbsAxis<Option<AlignItems>>,
     baseline_shim: f32,
     subgrid_margin_adjustment: Rect<f32>,
+    subgrid_layout_margin_adjustment: Rect<f32>,
     direction: Direction,
 ) -> (Size<f32>, f32, f32) {
     let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
@@ -102,24 +128,43 @@ pub(super) fn align_and_position_item(
 
     let box_sizing_adjustment =
         if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+    let preferred_inline_constraint = preferred_size_constraint(style.size().width);
+    let preferred_block_constraint = preferred_size_constraint(style.size().height);
 
-    let inherent_size = style
-        .size()
-        .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
-        .maybe_add(box_sizing_adjustment);
-    let min_size = style
-        .min_size()
-        .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_add(box_sizing_adjustment)
-        .or(padding_border_size.map(Some))
-        .maybe_max(padding_border_size)
-        .maybe_apply_aspect_ratio(aspect_ratio);
-    let max_size = style
-        .max_size()
-        .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
-        .maybe_add(box_sizing_adjustment);
+    let subgrid_min_size = padding_border_size.map(Some);
+
+    let inherent_size = ignore_subgrid_axis_constraints(
+        style
+            .size()
+            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
+            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_add(box_sizing_adjustment),
+        horizontal_axis_kind,
+        vertical_axis_kind,
+        Size { width: None, height: None },
+    );
+    let min_size = ignore_subgrid_axis_constraints(
+        style
+            .min_size()
+            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
+            .maybe_add(box_sizing_adjustment)
+            .or(subgrid_min_size)
+            .maybe_max(padding_border_size)
+            .maybe_apply_aspect_ratio(aspect_ratio),
+        horizontal_axis_kind,
+        vertical_axis_kind,
+        subgrid_min_size,
+    );
+    let max_size = ignore_subgrid_axis_constraints(
+        style
+            .max_size()
+            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
+            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_add(box_sizing_adjustment),
+        horizontal_axis_kind,
+        vertical_axis_kind,
+        Size { width: None, height: None },
+    );
 
     // Resolve default alignment styles if they are set on neither the parent or the node itself
     // Note: if the child has a preferred aspect ratio but neither width or height are set, then the width is stretched
@@ -130,7 +175,7 @@ pub(super) fn align_and_position_item(
             AlignSelf::Stretch
         } else {
             justify_self.or(container_alignment_styles.horizontal).unwrap_or_else(|| {
-                if inherent_size.width.is_some() {
+                if inherent_size.width.is_some() || preferred_inline_constraint.is_some() {
                     AlignSelf::Start
                 } else {
                     AlignSelf::Stretch
@@ -141,7 +186,7 @@ pub(super) fn align_and_position_item(
             AlignSelf::Stretch
         } else {
             align_self.or(container_alignment_styles.vertical).unwrap_or_else(|| {
-                if inherent_size.height.is_some() || aspect_ratio.is_some() {
+                if inherent_size.height.is_some() || preferred_block_constraint.is_some() || aspect_ratio.is_some() {
                     AlignSelf::Start
                 } else {
                     AlignSelf::Stretch
@@ -186,6 +231,43 @@ pub(super) fn align_and_position_item(
         }),
     };
 
+    // Final placement still needs the subgrid's projected edge margins and gutter deltas,
+    // otherwise descendant items keep the parent grid's shared gutters visually even when the
+    // subgrid overrides them, such as `gap: 0` on a row subgrid.
+    // Spec anchors:
+    // https://drafts.csswg.org/css-grid-2/#subgrid-margins
+    // https://drafts.csswg.org/css-grid-2/#subgrid-grid-alignment
+    let margin_for_alignment = Rect {
+        left: authored_margin.left.map(|value| value + subgrid_layout_margin_adjustment.left).or_else(|| {
+            if subgrid_layout_margin_adjustment.left != 0.0 {
+                Some(subgrid_layout_margin_adjustment.left)
+            } else {
+                None
+            }
+        }),
+        right: authored_margin.right.map(|value| value + subgrid_layout_margin_adjustment.right).or_else(|| {
+            if subgrid_layout_margin_adjustment.right != 0.0 {
+                Some(subgrid_layout_margin_adjustment.right)
+            } else {
+                None
+            }
+        }),
+        top: authored_margin.top.map(|value| value + subgrid_layout_margin_adjustment.top).or_else(|| {
+            if subgrid_layout_margin_adjustment.top != 0.0 {
+                Some(subgrid_layout_margin_adjustment.top)
+            } else {
+                None
+            }
+        }),
+        bottom: authored_margin.bottom.map(|value| value + subgrid_layout_margin_adjustment.bottom).or_else(|| {
+            if subgrid_layout_margin_adjustment.bottom != 0.0 {
+                Some(subgrid_layout_margin_adjustment.bottom)
+            } else {
+                None
+            }
+        }),
+    };
+
     let grid_area_minus_item_margins_size = Size {
         width: grid_area_size.width.maybe_sub(margin_for_size.left).maybe_sub(margin_for_size.right),
         height: grid_area_size.height.maybe_sub(margin_for_size.top).maybe_sub(margin_for_size.bottom) - baseline_shim,
@@ -193,56 +275,82 @@ pub(super) fn align_and_position_item(
 
     // If node is absolutely positioned and width is not set explicitly, then deduce it
     // from left, right and container_content_box if both are set.
-    let width = inherent_size.width.or_else(|| {
-        // Apply width derived from both the left and right properties of an absolutely
-        // positioned element being set
-        if position == Position::Absolute {
-            if let (Some(left), Some(right)) = (inset_horizontal.start, inset_horizontal.end) {
-                return Some(f32_max(grid_area_minus_item_margins_size.width - left - right, 0.0));
+    let width = if horizontal_axis_kind == GridAxisKind::Subgrid && position != Position::Absolute {
+        // https://drafts.csswg.org/css-grid-2/#subgrid-box-alignment
+        Some(grid_area_minus_item_margins_size.width)
+    } else {
+        inherent_size.width.or_else(|| {
+            // Apply width derived from both the left and right properties of an absolutely
+            // positioned element being set
+            if position == Position::Absolute {
+                if let (Some(left), Some(right)) = (inset_horizontal.start, inset_horizontal.end) {
+                    return Some(f32_max(grid_area_minus_item_margins_size.width - left - right, 0.0));
+                }
             }
-        }
 
-        // Apply width based on stretch alignment if:
-        //  - Alignment style is "stretch"
-        //  - The node is not absolutely positioned
-        //  - The node does not have auto margins in this axis.
-        if authored_margin.left.is_some()
-            && authored_margin.right.is_some()
-            && alignment_styles.horizontal == AlignSelf::Stretch
-            && position != Position::Absolute
-        {
-            return Some(grid_area_minus_item_margins_size.width);
-        }
+            // Apply width based on stretch alignment if:
+            //  - Alignment style is "stretch"
+            //  - The node is not absolutely positioned
+            //  - The node does not have auto margins in this axis.
+            if preferred_inline_constraint.is_none() &&
+                authored_margin.left.is_some()
+                && authored_margin.right.is_some()
+                && alignment_styles.horizontal == AlignSelf::Stretch
+                && position != Position::Absolute
+            {
+                return Some(grid_area_minus_item_margins_size.width);
+            }
 
-        None
-    });
+            None
+        })
+    };
 
     // Reapply aspect ratio after stretch and absolute position width adjustments
-    let Size { width, height } = Size { width, height: inherent_size.height }.maybe_apply_aspect_ratio(aspect_ratio);
+    let size_before_aspect_ratio = Size { width, height: inherent_size.height };
+    let Size { mut width, mut height } = size_before_aspect_ratio.maybe_apply_aspect_ratio(aspect_ratio);
+    if horizontal_axis_kind == GridAxisKind::Subgrid {
+        width = size_before_aspect_ratio.width;
+    }
+    if vertical_axis_kind == GridAxisKind::Subgrid {
+        height = size_before_aspect_ratio.height;
+    }
 
-    let height = height.or_else(|| {
-        if position == Position::Absolute {
-            if let (Some(top), Some(bottom)) = (inset_vertical.start, inset_vertical.end) {
-                return Some(f32_max(grid_area_minus_item_margins_size.height - top - bottom, 0.0));
+    let height = if vertical_axis_kind == GridAxisKind::Subgrid && position != Position::Absolute {
+        // https://drafts.csswg.org/css-grid-2/#subgrid-box-alignment
+        Some(grid_area_minus_item_margins_size.height)
+    } else {
+        height.or_else(|| {
+            if position == Position::Absolute {
+                if let (Some(top), Some(bottom)) = (inset_vertical.start, inset_vertical.end) {
+                    return Some(f32_max(grid_area_minus_item_margins_size.height - top - bottom, 0.0));
+                }
             }
-        }
 
-        // Apply height based on stretch alignment if:
-        //  - Alignment style is "stretch"
-        //  - The node is not absolutely positioned
-        //  - The node does not have auto margins in this axis.
-        if authored_margin.top.is_some()
-            && authored_margin.bottom.is_some()
-            && alignment_styles.vertical == AlignSelf::Stretch
-            && position != Position::Absolute
-        {
-            return Some(grid_area_minus_item_margins_size.height);
-        }
+            // Apply height based on stretch alignment if:
+            //  - Alignment style is "stretch"
+            //  - The node is not absolutely positioned
+            //  - The node does not have auto margins in this axis.
+            if preferred_block_constraint.is_none() &&
+                authored_margin.top.is_some()
+                && authored_margin.bottom.is_some()
+                && alignment_styles.vertical == AlignSelf::Stretch
+                && position != Position::Absolute
+            {
+                return Some(grid_area_minus_item_margins_size.height);
+            }
 
-        None
-    });
+            None
+        })
+    };
     // Reapply aspect ratio after stretch and absolute position height adjustments
-    let Size { width, height } = Size { width, height }.maybe_apply_aspect_ratio(aspect_ratio);
+    let size_before_final_aspect_ratio = Size { width, height };
+    let Size { mut width, mut height } = size_before_final_aspect_ratio.maybe_apply_aspect_ratio(aspect_ratio);
+    if horizontal_axis_kind == GridAxisKind::Subgrid {
+        width = size_before_final_aspect_ratio.width;
+    }
+    if vertical_axis_kind == GridAxisKind::Subgrid {
+        height = size_before_final_aspect_ratio.height;
+    }
 
     // Clamp size by min and max width/height
     let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);
@@ -250,10 +358,40 @@ pub(super) fn align_and_position_item(
     // Layout node
     drop(style);
 
-    let size = if position == Position::Absolute && (width.is_none() || height.is_none()) {
+    let mut size = Size { width, height };
+
+    if let Some(preferred_constraint) = preferred_inline_constraint {
+        let mut available_space = grid_area_minus_item_margins_size.map(AvailableSpace::Definite);
+        available_space.width = preferred_constraint;
+        size.width = Some(tree.measure_child_size(
+            node,
+            Size { width: None, height: size.height },
+            grid_area_size.map(Option::Some),
+            available_space,
+            SizingMode::InherentSize,
+            crate::geometry::AbsoluteAxis::Horizontal,
+            Line::FALSE,
+        ));
+    }
+
+    if let Some(preferred_constraint) = preferred_block_constraint {
+        let mut available_space = grid_area_minus_item_margins_size.map(AvailableSpace::Definite);
+        available_space.height = preferred_constraint;
+        size.height = Some(tree.measure_child_size(
+            node,
+            Size { width: size.width, height: None },
+            grid_area_size.map(Option::Some),
+            available_space,
+            SizingMode::InherentSize,
+            crate::geometry::AbsoluteAxis::Vertical,
+            Line::FALSE,
+        ));
+    }
+
+    let size = if position == Position::Absolute && (size.width.is_none() || size.height.is_none()) {
         tree.measure_child_size_both(
             node,
-            Size { width, height },
+            size,
             grid_area_size.map(Option::Some),
             grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
             SizingMode::InherentSize,
@@ -261,7 +399,7 @@ pub(super) fn align_and_position_item(
         )
         .map(Some)
     } else {
-        Size { width, height }
+        size
     };
 
     let layout_output = tree.perform_child_layout(
@@ -286,7 +424,7 @@ pub(super) fn align_and_position_item(
         width,
         position,
         inset_horizontal,
-        authored_margin.horizontal_components(),
+        margin_for_alignment.horizontal_components(),
         0.0,
         direction,
     );
@@ -300,7 +438,7 @@ pub(super) fn align_and_position_item(
         height,
         position,
         inset_vertical,
-        authored_margin.vertical_components(),
+        margin_for_alignment.vertical_components(),
         baseline_shim,
         Direction::Ltr,
     );

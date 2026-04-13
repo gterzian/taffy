@@ -291,6 +291,18 @@ impl Dimension {
         Self(CompactLength::auto())
     }
 
+    /// The size should be the "min-content" size.
+    #[inline(always)]
+    pub const fn min_content() -> Self {
+        Self(CompactLength::min_content())
+    }
+
+    /// The size should be the "max-content" size.
+    #[inline(always)]
+    pub const fn max_content() -> Self {
+        Self(CompactLength::max_content())
+    }
+
     /// A `calc()` value. The value passed here is treated as an opaque handle to
     /// the actual calc representation and may be a pointer, index, etc.
     ///
